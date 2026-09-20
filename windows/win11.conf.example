@@ -1,0 +1,34 @@
+# Copy to windows/win11.conf and edit. The real file is gitignored.
+
+# Source ISO. Any Windows 11 ISO with sources/install.wim works.
+ISO="$HOME/Downloads/Win11_25H2_EnglishInternational_x64_v2.iso"
+
+# Edition to apply. Run `make list-editions` to see what your ISO contains.
+# Native VHD boot is a Pro/Enterprise/Education feature - Home is not licensed
+# for it.
+EDITION="Windows 11 Pro"
+
+# Virtual size of the dynamic VHDX. It only consumes what Windows actually
+# uses, but Windows believes it has this much: do not set it far above the free
+# space on the stick, or a full stick corrupts the image.
+SIZE="48G"
+
+# VHDX payload block size. Left to qemu's auto-calculation this becomes 16 MiB
+# for a 48G image, and every scattered NTFS write then claims a whole 16 MiB
+# block: a ~14 GiB install produced a 42 GiB file. At 1M the same content is
+# ~17 GiB. The stick pays the full file size, so this is the setting that
+# decides how much of the stick the image eats.
+BLOCK_SIZE="1M"
+
+# Local account created by unattend.xml. The password is never stored here -
+# build-vhdx.sh prompts for it.
+USERNAME="egor"
+COMPUTERNAME="WIN11-USB"
+
+# en-GB matches the EnglishInternational ISO.
+LOCALE="en-GB"
+INPUTLOCALE="en-GB"
+TIMEZONE="GMT Standard Time"
+
+# Where the finished VHDX lands on the stick, relative to the Ventoy partition.
+DEST_DIR="/ventoy"

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Processed on first boot from C:\Windows\Panther\unattend.xml.
+
+  Setup's install phase never runs in this build: install.wim is applied straight
+  to the VHDX with wimlib. That is why there are no windowsPE-pass components
+  here, and why the LabConfig/TPM-bypass keys everyone adds are absent - those
+  bypass Setup's hardware checks, and nothing runs those checks.
+
+  Setup's out-of-box phase does still run on first boot (setup.exe -newsetup),
+  which is what processes this file's specialize and oobeSystem passes.
+
+  Placeholders (@@NAME@@) are substituted by windows/build-vhdx.sh.
+-->
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+
+  <settings pass="specialize">
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
+               xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <ComputerName>@@COMPUTERNAME@@</ComputerName>
+      <TimeZone>@@TIMEZONE@@</TimeZone>
+    </component>
+  </settings>
+
+  <settings pass="oobeSystem">
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
+               xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <InputLocale>@@INPUTLOCALE@@</InputLocale>
+      <SystemLocale>@@LOCALE@@</SystemLocale>
+      <UILanguage>@@LOCALE@@</UILanguage>
+      <UserLocale>@@LOCALE@@</UserLocale>
+    </component>
+
+    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS"
+               xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <OOBE>
+        <!-- HideOnlineAccountScreens is what keeps this a LOCAL account: without
+             it Windows 11 parks on "Sign in with Microsoft" with no way past. -->
+        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+        <HideEULAPage>true</HideEULAPage>
+        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+        <ProtectYourPC>3</ProtectYourPC>
+      </OOBE>
+
+      <UserAccounts>
+        <LocalAccounts>
+          <LocalAccount wcm:action="add">
+            <Name>@@USERNAME@@</Name>
+            <DisplayName>@@USERNAME@@</DisplayName>
+            <Group>Administrators</Group>
+            <Password>
+              <Value>@@PASSWORD@@</Value>
+              <PlainText>false</PlainText>
+            </Password>
+          </LocalAccount>
+        </LocalAccounts>
+      </UserAccounts>
+
+      <FirstLogonCommands>
+        <!-- This install lives on a USB stick that moves between machines.
+             SAN policy 4 (OfflineAll) stops Windows mounting - and writing to -
+             the internal disks of whatever host it is booted on. -->
+        <SynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>Keep host internal disks offline</Description>
+          <CommandLine>cmd /c echo san policy=OfflineAll &gt; %TEMP%\san.txt &amp; diskpart /s %TEMP%\san.txt</CommandLine>
+        </SynchronousCommand>
+        <!-- Device encryption would bind this install to one machine's TPM and
+             make it unbootable on the next. -->
+        <SynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <Description>Disable automatic device encryption</Description>
+          <CommandLine>reg add HKLM\SYSTEM\CurrentControlSet\Control\BitLocker /v PreventDeviceEncryption /t REG_DWORD /d 1 /f</CommandLine>
+        </SynchronousCommand>
+      </FirstLogonCommands>
+    </component>
+  </settings>
+</unattend>

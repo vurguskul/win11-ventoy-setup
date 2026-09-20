@@ -1,0 +1,11 @@
+# Build output: VHDX images, fetched ISOs, downloaded Ventoy blobs.
+out/
+*.vhdx
+*.vhd
+*.iso
+*.img
+
+# Rendered unattend files carry a password. Only the template is tracked.
+windows/unattend/unattend.xml
+windows/*.conf
+!windows/*.conf.example
