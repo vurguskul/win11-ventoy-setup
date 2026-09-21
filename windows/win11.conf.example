@@ -31,5 +31,14 @@ LOCALE="en-GB"
 INPUTLOCALE="en-GB"
 TIMEZONE="GMT Standard Time"
 
+# Vendor driver packages to put in the image's driver store at build time.
+# Windows' inbox set has no driver for any modern GPU, so without this the
+# image boots on the Microsoft Basic Display Adapter: odd resolution on the
+# laptop panel, and no external monitor. Anything with a .inf under here is
+# injected; see windows/drivers/README.md for how to get packages out of a
+# vendor download. Leave it unset to use windows/drivers/ when it has
+# something in it and build without drivers when it does not.
+#DRIVERS_DIR="windows/drivers"
+
 # Where the finished VHDX lands on the stick, relative to the Ventoy partition.
 DEST_DIR="/ventoy"

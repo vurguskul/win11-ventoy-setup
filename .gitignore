@@ -5,6 +5,11 @@ out/
 *.iso
 *.img
 
+# Vendor driver packages dropped in for injection: large, and not ours to ship.
+# The README explaining what belongs there is tracked.
+windows/drivers/*
+!windows/drivers/README.md
+
 # Rendered unattend files carry a password. Only the template is tracked.
 windows/unattend/unattend.xml
 windows/*.conf

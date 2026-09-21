@@ -1,0 +1,89 @@
+# Driver packages to fetch before the build - "make drivers", and "make
+# windows" does it for you. Format:
+#
+#   <name>  PCI\VEN_xxxx&DEV_xxxx      look the device up in the Microsoft
+#                                      Update Catalog and take the newest
+#                                      driver published for it
+#   <name>  https://.../package.zip    fetch that file directly
+#
+# <name> is the directory it lands in under windows/drivers/. Everything with
+# a .inf under there is injected into the image's driver store at build time.
+#
+#
+# WHY THIS LIST IS ALL NETWORK ADAPTERS
+#
+# The visible problem is graphics - with no vendor driver Windows falls back to
+# the Microsoft Basic Display Adapter, which means an odd resolution and no
+# external monitor. But a graphics package is 500-900 MB, it is specific to one
+# machine's GPU, and Windows Update hands it over for free on first boot.
+#
+# What Windows Update cannot do is bootstrap itself. A laptop whose Wi-Fi card
+# has no inbox driver has no network, so it never reaches Windows Update, so it
+# never gets the GPU driver either. Networking is the only thing that has to be
+# in the image; everything else follows from it.
+#
+# So: get the machine online, and let Windows Update do the rest. The whole
+# list below is ~60 MB to download and ~190 MB in the driver store, against
+# ~550 MB for a single machine's GPU. Boot the stick, connect, then Settings >
+# Windows Update - graphics usually arrives under Advanced options > Optional
+# updates > Driver updates.
+#
+# Between them these packages carry ~128 device IDs. What they cover was
+# checked against the INFs after fetching, not assumed from the vendor's
+# blurb: the MT7922 package does not cover MT7921, and the RTL8852BE one does
+# not cover RTL8852AE, which is why those are separate entries.
+#
+#
+# WHAT IS ALREADY INBOX, AND SO NOT HERE
+#
+# Checked against this ISO's install.wim rather than assumed:
+#
+#   Intel Wi-Fi     AX200/AX201/AX210         netwtw10.inf (but it is a 2019
+#                                             driver that stops at AX210)
+#   Realtek Wi-Fi   RTL8821CE/8822CE          netrtwlane.inf
+#   Qualcomm Wi-Fi  QCA6174 and older         netathr10x.inf
+#   Intel LAN       I219, I225                net1ic64.inf, net2ic68.inf
+#   USB LAN         ASIX AX88179/AX88772      netax88179_178a.inf
+#   USB tethering   RNDIS                     netimm.inf  <- a phone on a USB
+#                                             cable is the escape hatch when
+#                                             nothing else here matches
+#
+# Fetched once and then left alone, so a build does not silently change driver
+# versions: to take a newer one, delete windows/drivers/<name>/ and re-run.
+# Anything dropped into windows/drivers/ by hand is injected just the same -
+# see windows/drivers/README.md.
+
+# --- Wi-Fi ---------------------------------------------------------------
+# One package covers AX201/AX210/AX211/AX411 and BE200 (26 device IDs). The
+# inbox driver is from 2019 and stops at AX210, so this is what every
+# 12th-gen-and-later laptop needs. AX200 and older stay on the inbox driver.
+intel-wifi          PCI\VEN_8086&DEV_51F0
+
+# MediaTek is in a large share of AMD laptops and cheap Intel ones. The inbox
+# driver is the old Ralink one and stops at MT7630. Three entries because
+# MediaTek ships a separate package per part, not one family driver.
+mediatek-wifi-7921  PCI\VEN_14C3&DEV_7961
+mediatek-wifi-7922  PCI\VEN_14C3&DEV_0616
+mediatek-wifi-7925  PCI\VEN_14C3&DEV_0717
+
+# Qualcomm FastConnect (WCN685x, NFA765) - nothing under VEN_17CB is inbox at
+# all. Common in recent Ryzen laptops.
+qualcomm-wifi       PCI\VEN_17CB&DEV_1103
+
+# Realtek Wi-Fi 6. The inbox driver covers the 8821/8822 generation but not
+# this one, and Realtek ships AE and BE as separate packages.
+realtek-wifi-8852ae PCI\VEN_10EC&DEV_8852
+realtek-wifi-8852be PCI\VEN_10EC&DEV_B852
+
+# --- Ethernet ------------------------------------------------------------
+# The inbox Realtek Ethernet driver covers the RTL8139 era and nothing since,
+# so the PCIe GbE part on most desktops and many laptops is unsupported.
+realtek-lan         PCI\VEN_10EC&DEV_8168
+realtek-lan-25g     PCI\VEN_10EC&DEV_8125
+
+# Intel I226. I219 and I225 are inbox; I226 is not.
+intel-lan           PCI\VEN_8086&DEV_125C
+
+# The cheap USB-C dongle. Works on any machine, so it is worth the 1 MB as a
+# last resort when a machine's built-in networking is not covered above.
+realtek-usb-lan     USB\VID_0BDA&PID_8153

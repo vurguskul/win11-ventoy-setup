@@ -9,11 +9,12 @@
 SHELL := /bin/bash
 IMAGE := boot-media-build
 
-.PHONY: help image list-editions vhdboot build windows copy test-boot screenshot shell clean
+.PHONY: help image list-editions vhdboot drivers build windows copy test-boot screenshot shell clean
 
 help:
 	@echo "make list-editions   list the Windows editions in the ISO"
 	@echo "make vhdboot         install ventoy_vhdboot.img on the stick (once)"
+	@echo "make drivers         fetch the driver packages in windows/drivers.txt"
 	@echo "make windows         build the Win11 VHDX and copy it to the stick"
 	@echo "make build           build the VHDX only, leave the stick alone"
 	@echo "make copy            copy an already-built VHDX to the stick"
@@ -31,10 +32,17 @@ list-editions:
 vhdboot:
 	@ventoy/fetch-vhdboot.sh
 
+# Fetched before the build because the image is deployed offline: Windows
+# Update is not there to supply a display driver on first boot, so whatever is
+# going into the driver store has to be on hand now. Already-fetched packages
+# are left alone, so this is a no-op after the first run.
+drivers:
+	@windows/fetch-drivers.sh
+
 build:
 	@windows/build.sh
 
-windows: vhdboot build copy
+windows: vhdboot drivers build copy
 
 copy:
 	@windows/copy-to-stick.sh

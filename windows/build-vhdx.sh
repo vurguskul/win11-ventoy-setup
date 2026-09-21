@@ -45,7 +45,7 @@ source "$ROOT/lib/common.sh"
 
 # --- config -------------------------------------------------------------------
 
-ISO=""; EDITION=""; SIZE="48G"; BLOCK_SIZE="1M"
+ISO=""; EDITION=""; SIZE="48G"; BLOCK_SIZE="1M"; DRIVERS=""
 USERNAME="egor"; COMPUTERNAME="WIN11-USB"
 LOCALE="en-GB"; INPUTLOCALE="en-GB"; TIMEZONE="GMT Standard Time"
 WORK="/work"; OUT=""
@@ -60,6 +60,7 @@ usage: build-vhdx.sh [options]        (runs inside the build container)
   --edition NAME     edition to apply, e.g. "Windows 11 Pro"
   --size SIZE        virtual size of the VHDX (default 48G)
   --block-size SIZE  VHDX payload block size (default 1M)
+  --drivers DIR      inject every INF package under DIR into the driver store
   --user NAME        local account to create
   --computer NAME    computer name
   --locale / --input-locale / --timezone
@@ -78,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --edition)      EDITION="${2:?}"; shift 2 ;;
     --size)         SIZE="${2:?}"; shift 2 ;;
     --block-size)   BLOCK_SIZE="${2:?}"; shift 2 ;;
+    --drivers)      DRIVERS="${2:?}"; shift 2 ;;
     --user)         USERNAME="${2:?}"; shift 2 ;;
     --computer)     COMPUTERNAME="${2:?}"; shift 2 ;;
     --locale)       LOCALE="${2:?}"; shift 2 ;;
@@ -437,26 +439,105 @@ place "$PE_PART" "$PE_START" "$PE_IMG"
 rm -f "$PE_PART"
 info "$PE_IMG  $(human "$(stat -c%s "$PE_IMG")")"
 
+# --- drivers ------------------------------------------------------------------
+#
+# install.wim's only display driver is basicdisplay.inf. On real hardware that
+# is the Microsoft Basic Display Adapter: one screen, stuck at whatever mode
+# the firmware's GOP left behind, and no external output at all, because a
+# framebuffer driver cannot drive the machine's other display pipes. The same
+# goes for any other device the inbox set does not cover. Windows Update would
+# fix it on a machine that has working networking, but that is not something
+# the image can rely on, and it is not something this build can do offline.
+#
+# So vendor INF packages are put in the image's driver store here, offline,
+# with DISM in the WinPE phase that is running anyway. They cost nothing until
+# the hardware they match turns up - which is what makes this right for a stick
+# that moves between machines: inject every machine's drivers, and each one
+# binds where it belongs.
+#
+# A disk of its own, with a *basic data* partition rather than an ESP: WinPE
+# does not assign drive letters to EFI System Partitions, so drivers carried on
+# the WinPE disk would be unreachable without another diskpart dance. A basic
+# data FAT32 volume is lettered automatically.
+DRV_IMG=""
+DRV_ARGS=()
+if [[ -n $DRIVERS ]]; then
+  [[ -d $DRIVERS ]] || die "--drivers: not a directory: $DRIVERS"
+  mapfile -t INFS < <(find "$DRIVERS" -type f -iname '*.inf' | sort)
+  (( ${#INFS[@]} )) || die "--drivers: no .inf file anywhere under $DRIVERS
+       an INF package is a directory of files, not an installer .exe - see the
+       README for how to get one out of a vendor download."
+
+  log "Building the driver payload disk"
+  DRV_IMG="$WORK/drivers.img"
+  DRV_PART="$WORK/drivers-part.img"
+  rm -f "$DRV_IMG" "$DRV_PART"
+  # 96 MiB of slack: FAT32 needs a floor of its own, and mcopy needs somewhere
+  # to put the directory entries.
+  DRV_MB=$(( $(du -sm --apparent-size "$DRIVERS" | cut -f1) + 96 ))
+  truncate -s "${DRV_MB}M" "$DRV_IMG"
+  sgdisk -o -n 1:2048:0 -t 1:0700 -c 1:DRIVERS "$DRV_IMG" >/dev/null
+  DRV_START=$(part_first 1 "$DRV_IMG")
+  DRV_SECTORS=$(( $(part_last 1 "$DRV_IMG") - DRV_START + 1 ))
+  truncate -s $(( DRV_SECTORS * 512 )) "$DRV_PART"
+  mkfs.vfat -F 32 -n DRIVERS "$DRV_PART" >/dev/null
+  mmd -i "$DRV_PART" ::/drivers
+  mcopy -s -i "$DRV_PART" "$DRIVERS"/* ::/drivers/
+  # startnet.cmd finds the payload by this file: it has to recognise the volume
+  # by content, because the drive letter WinPE gives it is not knowable here.
+  : > "$WORK/payload.tag"
+  mcopy -i "$DRV_PART" "$WORK/payload.tag" ::/drivers/payload.tag
+  rm -f "$WORK/payload.tag"
+  place "$DRV_PART" "$DRV_START" "$DRV_IMG"
+  rm -f "$DRV_PART"
+  info "${#INFS[@]} INF package(s) from $DRIVERS, $(human $(( DRV_MB * 1048576 )))"
+  for i in "${INFS[@]}"; do info "  ${i#"$DRIVERS"/}"; done
+  DRV_ARGS=(
+    -drive file="$DRV_IMG",format=raw,if=none,id=drv,cache=writeback
+    -device ide-hd,drive=drv,bus=ahci.2
+  )
+else
+  info "no drivers to inject - the image will use only Windows' inbox set"
+fi
+
 log "Running bcdboot in WinPE"
-# bootindex decides which of the two disks the firmware tries first: the image
-# being built has no BCD yet, so without it the boot order is a coin toss.
-run_qemu winpe 900 -m 2048 -smp 2 \
+# bootindex decides which of the disks the firmware tries first: the image
+# being built has no BCD yet, so without it the boot order is a coin toss. The
+# driver disk gets no bootindex at all - it is never booted from.
+# 3 GB rather than 2: boot.wim is loaded into a RAM disk in its entirety, and
+# DISM works above that.
+run_qemu winpe 1800 -m 3072 -smp 2 \
   -drive file="$DISK",format=raw,if=none,id=hd,cache=writeback \
   -device ich9-ahci,id=ahci \
   -device ide-hd,drive=hd,bus=ahci.0,bootindex=1 \
   -drive file="$PE_IMG",format=raw,if=none,id=pe,cache=writeback \
-  -device ide-hd,drive=pe,bus=ahci.1,bootindex=0
+  -device ide-hd,drive=pe,bus=ahci.1,bootindex=0 \
+  "${DRV_ARGS[@]}"
 
 if mdir s:/EFI/Microsoft/Boot >/dev/null 2>&1; then
   info "ESP now holds $(mdir -b s:/EFI/Microsoft/Boot 2>/dev/null | wc -l) boot files"
 else
-  mtype s:bcdboot.log 2>/dev/null | sed 's/^/    | /' || true
+  mtype s:winpe.log 2>/dev/null | sed 's/^/    | /' || true
   die "the ESP has no \\EFI\\Microsoft\\Boot after the WinPE phase - bcdboot did not run.
        See $WORK/winpe-*.png and the log above."
 fi
-mtype s:bcdboot.log > "$WORK/bcdboot.log" 2>/dev/null || true
-grep -q 'bcdboot exit code: 0' "$WORK/bcdboot.log" 2>/dev/null ||
-  warn "bcdboot did not report exit code 0 - see $WORK/bcdboot.log"
+mtype s:winpe.log > "$WORK/winpe.log" 2>/dev/null || true
+mtype s:dism.log  > "$WORK/dism.log"  2>/dev/null || true
+grep -q 'bcdboot exit code: 0' "$WORK/winpe.log" 2>/dev/null ||
+  warn "bcdboot did not report exit code 0 - see $WORK/winpe.log"
+
+# A driver that silently failed to inject is the whole bug this exists to fix,
+# and it would not show up again until the image is on real hardware - so the
+# build fails here rather than shipping an image that boots to a basic display.
+if [[ -n $DRV_IMG ]]; then
+  if grep -q 'dism exit code: 0' "$WORK/winpe.log" 2>/dev/null; then
+    info "drivers      added to the image's driver store"
+  else
+    sed -n '/driver payload/,$p' "$WORK/winpe.log" 2>/dev/null | sed 's/^/    | /' >&2
+    die "DISM did not add the drivers.
+       See $WORK/winpe.log and $WORK/dism.log."
+  fi
+fi
 
 # bcdboot writes \EFI\Microsoft\Boot\bootmgfw.efi and a UEFI NVRAM entry
 # pointing at it. The NVRAM entry is no use here: every phase gets a fresh copy
@@ -473,7 +554,7 @@ mcopy -o "$WORK/bootx64.efi" "s:/EFI/BOOT/BOOTX64.EFI" ||
 rm -f "$WORK/bootx64.efi"
 info "ESP: $(mdir -b s:/EFI/BOOT 2>/dev/null | tr -d '\r' | tr '\n' ' ')"
 
-rm -f "$PE_IMG"
+rm -f "$PE_IMG" ${DRV_IMG:+"$DRV_IMG"}
 stage_done winpe
 
 # --- deploy: let Setup finish, natively ---------------------------------------

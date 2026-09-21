@@ -93,6 +93,21 @@
           <Description>Disable automatic device encryption</Description>
           <CommandLine>reg add HKLM\SYSTEM\CurrentControlSet\Control\BitLocker /v PreventDeviceEncryption /t REG_DWORD /d 1 /f</CommandLine>
         </SynchronousCommand>
+        <!-- Fast startup makes a "shut down" a kernel hibernate. Resume that
+             hiberfile on the next machine and Windows comes back believing it
+             still has the previous machine's GPU, chipset and storage stack:
+             a bugcheck at best, a corrupted volume at worst. This install is
+             carried between machines, so hibernation goes off entirely -
+             which takes fast startup with it, since fast startup is a partial
+             hibernate. Windows To Go disabled both for the same reason.
+             HiberbootEnabled is set as well: powercfg clears it, but anything
+             that later re-enables hibernation would otherwise bring fast
+             startup back with it. -->
+        <SynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <Description>Disable hibernation and fast startup</Description>
+          <CommandLine>cmd /c powercfg /h off &amp; reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power" /v HiberbootEnabled /t REG_DWORD /d 0 /f</CommandLine>
+        </SynchronousCommand>
         <!-- OOBE runs during the build, inside QEMU, so the image has to put
              itself away when it is done: the build waits for the guest to
              power off and treats that as the success signal. First-logon
@@ -103,12 +118,12 @@
              Doing it explicitly means the shipped image cannot be carrying a
              plaintext DefaultPassword even if it does not. -->
         <SynchronousCommand wcm:action="add">
-          <Order>3</Order>
+          <Order>4</Order>
           <Description>Clear the one-time auto-logon credentials</Description>
           <CommandLine>cmd /c reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_SZ /d 0 /f &amp; reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword /f</CommandLine>
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
-          <Order>4</Order>
+          <Order>5</Order>
           <Description>Power off; the build is finished with this image</Description>
           <CommandLine>shutdown /s /t 0</CommandLine>
         </SynchronousCommand>

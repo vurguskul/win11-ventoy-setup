@@ -22,9 +22,15 @@ IMAGE="${IMAGE:-boot-media-build}"
 # to arrive.
 ISO=""; EDITION=""; SIZE=""; BLOCK_SIZE=""; USERNAME="egor"; COMPUTERNAME=""
 LOCALE=""; INPUTLOCALE=""; TIMEZONE=""; LIST_ONLY=0
+DRIVERS_DIR=""
 PASS_THROUGH=()
 
 [[ -f $ROOT/windows/win11.conf ]] && source "$ROOT/windows/win11.conf"
+
+# Asking for drivers and getting none silently is worse than a hard stop, so
+# the two cases are told apart: an explicit DRIVERS_DIR that yields nothing is
+# an error, the default directory being empty is not.
+DRIVERS_EXPLICIT=0; [[ -n $DRIVERS_DIR ]] && DRIVERS_EXPLICIT=1
 
 # Command-line arguments override win11.conf. Anything not recognised here is
 # handed to the container script unchanged.
@@ -34,6 +40,7 @@ while [[ $# -gt 0 ]]; do
     --edition)      EDITION="${2:?}"; shift 2 ;;
     --size)         SIZE="${2:?}"; shift 2 ;;
     --block-size)   BLOCK_SIZE="${2:?}"; shift 2 ;;
+    --drivers)      DRIVERS_DIR="${2:?}"; DRIVERS_EXPLICIT=1; shift 2 ;;
     --user)         USERNAME="${2:?}"; shift 2 ;;
     --computer)     COMPUTERNAME="${2:?}"; shift 2 ;;
     --locale)       LOCALE="${2:?}"; shift 2 ;;
@@ -84,6 +91,29 @@ opt --computer     "$COMPUTERNAME"
 opt --locale       "$LOCALE"
 opt --input-locale "$INPUTLOCALE"
 opt --timezone     "$TIMEZONE"
+
+# Vendor INF packages to put in the image's driver store. Windows' inbox set
+# has no driver for any modern GPU, and an image built and deployed entirely
+# inside QEMU has never seen the machine it will run on - so without this it
+# comes up on the Microsoft Basic Display Adapter: wrong resolution, and no
+# external monitor. The directory is bind-mounted rather than passed by path:
+# the container only has /repo and /iso, and drivers may live outside both.
+DRIVERS_DIR="${DRIVERS_DIR:-$ROOT/windows/drivers}"
+# Resolved against the repo, not the shell's cwd: win11.conf is a config file,
+# and a relative path in one should not mean something different depending on
+# where make was run from.
+[[ $DRIVERS_DIR == /* ]] || DRIVERS_DIR="$ROOT/$DRIVERS_DIR"
+if [[ -d $DRIVERS_DIR ]] && [[ -n $(find "$DRIVERS_DIR" -type f -iname '*.inf' -print -quit) ]]; then
+  DRIVERS_ABS="$(cd "$DRIVERS_DIR" && pwd)"
+  DOCKER_ARGS+=(-v "$DRIVERS_ABS:/drivers:ro")
+  CMD+=(--drivers /drivers)
+  info "drivers from $DRIVERS_ABS"
+elif (( DRIVERS_EXPLICIT )); then
+  die "no .inf file anywhere under $DRIVERS_DIR
+       an INF package is a directory of files, not an installer .exe - see the
+       README for how to get one out of a vendor download."
+fi
+
 (( ${#PASS_THROUGH[@]} )) && CMD+=("${PASS_THROUGH[@]}")
 
 # --list-editions needs no password and no config beyond the ISO.
