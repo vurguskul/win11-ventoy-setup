@@ -1,32 +1,56 @@
 # boot-media - build bootable media for the Ventoy stick.
 #
 # Everything here is additive: no target formats or repartitions the stick.
+#
+# The Windows build runs in a container (docker/Dockerfile), so the host needs
+# only docker and /dev/kvm. `make test-boot` is the exception - it boots the
+# physical stick, which needs qemu and sudo on the host.
 
 SHELL := /bin/bash
+IMAGE := boot-media-build
 
-.PHONY: help list-editions vhdboot windows test-boot screenshot clean
+.PHONY: help image list-editions vhdboot build windows copy test-boot screenshot shell clean
 
 help:
 	@echo "make list-editions   list the Windows editions in the ISO"
 	@echo "make vhdboot         install ventoy_vhdboot.img on the stick (once)"
 	@echo "make windows         build the Win11 VHDX and copy it to the stick"
+	@echo "make build           build the VHDX only, leave the stick alone"
+	@echo "make copy            copy an already-built VHDX to the stick"
+	@echo "make image           (re)build the build container"
+	@echo "make shell           open a shell in the build container"
 	@echo "make test-boot       boot the stick in QEMU to verify (read-only)"
 	@echo "make clean           remove out/"
 
+image:
+	docker build -t $(IMAGE) -f docker/Dockerfile docker
+
 list-editions:
-	@windows/build-vhdx.sh --list-editions
+	@windows/build.sh --list-editions
 
 vhdboot:
 	@ventoy/fetch-vhdboot.sh
 
-windows: vhdboot
-	@windows/build-vhdx.sh
+build:
+	@windows/build.sh
+
+windows: vhdboot build copy
+
+copy:
+	@windows/copy-to-stick.sh
 
 test-boot:
 	@windows/test-boot.sh
 
 screenshot:
 	@windows/screenshot.sh
+
+# For poking at a half-built image: out/ is mounted at /work, the repo at /repo.
+shell:
+	docker run --rm -it --user $$(id -u):$$(id -g) \
+	  --device /dev/kvm \
+	  -v $(CURDIR):/repo:ro -v $(CURDIR)/out:/work \
+	  $(IMAGE) bash
 
 clean:
 	rm -rf out/*

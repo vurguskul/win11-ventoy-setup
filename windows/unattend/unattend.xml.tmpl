@@ -46,6 +46,23 @@
         <ProtectYourPC>3</ProtectYourPC>
       </OOBE>
 
+      <!-- OOBE finishes at the lock screen, and FirstLogonCommands only run
+           when someone actually signs in - so without this the build's own
+           shutdown never fires and the deploy phase sits there until it times
+           out. LogonCount 1 spends this during the build: the machine you boot
+           from the stick comes up at the login screen like any other. The
+           value is encoded exactly like the account password, because the rule
+           is the name of the enclosing element, "Password", either way. -->
+      <AutoLogon>
+        <Enabled>true</Enabled>
+        <LogonCount>1</LogonCount>
+        <Username>@@USERNAME@@</Username>
+        <Password>
+          <Value>@@PASSWORD@@</Value>
+          <PlainText>false</PlainText>
+        </Password>
+      </AutoLogon>
+
       <UserAccounts>
         <LocalAccounts>
           <LocalAccount wcm:action="add">
@@ -75,6 +92,25 @@
           <Order>2</Order>
           <Description>Disable automatic device encryption</Description>
           <CommandLine>reg add HKLM\SYSTEM\CurrentControlSet\Control\BitLocker /v PreventDeviceEncryption /t REG_DWORD /d 1 /f</CommandLine>
+        </SynchronousCommand>
+        <!-- OOBE runs during the build, inside QEMU, so the image has to put
+             itself away when it is done: the build waits for the guest to
+             power off and treats that as the success signal. First-logon
+             commands run once, so this is spent before the stick ever sees
+             the image - the machine you boot from the stick comes up at the
+             login screen. -->
+        <!-- Windows is meant to clear these once LogonCount is exhausted.
+             Doing it explicitly means the shipped image cannot be carrying a
+             plaintext DefaultPassword even if it does not. -->
+        <SynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <Description>Clear the one-time auto-logon credentials</Description>
+          <CommandLine>cmd /c reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_SZ /d 0 /f &amp; reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword /f</CommandLine>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>4</Order>
+          <Description>Power off; the build is finished with this image</Description>
+          <CommandLine>shutdown /s /t 0</CommandLine>
         </SynchronousCommand>
       </FirstLogonCommands>
     </component>

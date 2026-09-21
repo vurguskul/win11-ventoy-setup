@@ -4,8 +4,10 @@
 # rebooting this machine.
 #
 # This exercises the whole chain - Ventoy's grub, vt_patch_vhdboot, the patched
-# BCD, winload - which is the only way to be sure. Booting the VHDX on its own
-# would fail by design: it contains no bootmgr, because Ventoy supplies it.
+# BCD, winload - which is the only way to be sure of the Ventoy path
+# specifically. The build already booted the image itself, natively, to finish
+# Setup, so an image that got this far is known to boot; what this checks is
+# that Ventoy can start it too.
 #
 # Runs with -snapshot, so every write goes to a throwaway overlay and the stick
 # is never modified. UEFI vars are a scratch copy for the same reason.
