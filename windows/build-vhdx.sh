@@ -145,7 +145,6 @@ stage_done() { [[ -n $STOP_AFTER && $STOP_AFTER == "$1" ]] && { log "--stop-afte
 WANT=()
 [[ -n $(find_ci "$SRC" 'sources/install.wim') ]] || WANT+=("sources/install.wim")
 if ! (( LIST_ONLY )); then
-  [[ -n $(find_ci "$SRC" 'sources/boot.wim') ]]            || WANT+=("sources/boot.wim")
   [[ -n $(find_ci "$SRC" 'efi/microsoft/boot/efisys.bin') ]] || WANT+=("efi" "boot")
 fi
 
@@ -163,15 +162,8 @@ else
   info "using the cached extraction in $SRC"
 fi
 WIM="$(find_ci "$SRC" 'sources/install.wim')"
-BOOTWIM="$(find_ci "$SRC" 'sources/boot.wim')"
 [[ -n $WIM ]] || die "no sources/install.wim in the ISO (an install.esd needs converting first)"
 info "install.wim  $(human "$(stat -c%s "$WIM")")"
-# boot.wim is only needed for the bcdboot phase, and --list-editions does not
-# extract it.
-if ! (( LIST_ONLY )); then
-  [[ -n $BOOTWIM ]] || die "no sources/boot.wim in the ISO - needed for the bcdboot phase"
-  info "boot.wim     $(human "$(stat -c%s "$BOOTWIM")")"
-fi
 
 if (( LIST_ONLY )); then
   log "Editions in this ISO"
@@ -387,18 +379,41 @@ export MTOOLSRC="$WORK/mtoolsrc"
 log "Building the WinPE boot disk"
 PE_IMG="$WORK/winpe.img"
 PE_BOOTWIM="$WORK/pe-boot.wim"
-cp "$BOOTWIM" "$PE_BOOTWIM"
 
-# boot.wim holds two images: 1 is plain WinPE, 2 is Windows Setup, and the
-# WIM's boot index points at 2. Image 2 is no use here - its registry carries
-# HKLM\SYSTEM\Setup\CmdLine=setup.exe, so winlogon launches Setup directly and
-# startnet.cmd never runs. (Booting it lands on "Install driver to show
-# hardware" and sits there.) Image 1 runs startnet.cmd the ordinary way, and
-# carries bcdboot, diskpart and wpeutil just the same.
+# The WinPE is the image's own recovery environment, not the ISO's boot.wim.
+# boot.wim's WinPE cannot service an offline image at all: DISM starts
+# dismhost.exe, never gets its COM object back, and every /Image: command ends
+# at
+#
+#   DismHostLib: Failed to create DismHostManager remote object (hr:0x80004002)
+#   DISM.EXE: Could not load the image session. HRESULT=80004002
+#
+# which is "No such interface supported" on the console. It is the WinPE that
+# is broken and not the image being serviced: "dism /image:X:\", pointed at
+# WinPE's own RAM disk, fails the same way, as does every variation of scratch
+# directory, and the two WIMs ship byte-identical DISM binaries on the same
+# servicing stack. Winre.wim's DISM works. It is a WinPE like any other -
+# startnet.cmd runs once winpeshl.ini is gone, and bcdboot, diskpart and
+# wpeutil are all there - and it comes out of the image being built, so the
+# tool doing the servicing always matches what it is servicing.
+PE_SRC="$SRC/winre.wim"
+if [[ ! -s $PE_SRC ]]; then
+  info "extracting Winre.wim from the image"
+  rm -f "$SRC/Winre.wim"
+  wimextract "$WIM" "$INDEX" /Windows/System32/Recovery/Winre.wim \
+    --dest-dir="$SRC" --no-acls >/dev/null 2>&1 ||
+    die "no \\Windows\\System32\\Recovery\\Winre.wim in this edition - the winpe
+       phase has no WinPE to boot"
+  mv "$SRC/Winre.wim" "$PE_SRC"
+fi
+info "winre.wim    $(human "$(stat -c%s "$PE_SRC")")"
+cp "$PE_SRC" "$PE_BOOTWIM"
+
 PE_IMAGES=$(wiminfo "$PE_BOOTWIM" | awk '/^Image Count:/ { print $NF }')
-for i in $(seq 1 "${PE_IMAGES:-2}"); do
-  # startnet.cmd already exists in the image, so it is removed before being
-  # added rather than added over.
+# winpeshl.ini is what launches the recovery shell instead of startnet.cmd, so
+# it goes; startnet.cmd already exists, so it is removed before being added
+# rather than added over.
+for i in $(seq 1 "${PE_IMAGES:-1}"); do
   wimupdate "$PE_BOOTWIM" "$i" >/dev/null <<CMDS
 delete --force /Windows/System32/winpeshl.ini
 delete --force /Windows/System32/startnet.cmd
@@ -406,7 +421,7 @@ add "$ROOT/windows/winpe/startnet.cmd" "/Windows/System32/startnet.cmd"
 CMDS
 done
 wiminfo "$PE_BOOTWIM" 1 --boot >/dev/null
-info "patched $PE_IMAGES WinPE image(s); booting image 1 (plain WinPE)"
+info "patched $PE_IMAGES WinPE image(s); booting image 1 (WinRE)"
 
 # A GPT disk with one EFI System Partition, not a bare FAT volume: OVMF found
 # no boot option at all on a partitionless FAT disk. PartitionDxe -> ESP ->
@@ -504,8 +519,8 @@ log "Running bcdboot in WinPE"
 # bootindex decides which of the disks the firmware tries first: the image
 # being built has no BCD yet, so without it the boot order is a coin toss. The
 # driver disk gets no bootindex at all - it is never booted from.
-# 3 GB rather than 2: boot.wim is loaded into a RAM disk in its entirety, and
-# DISM works above that.
+# 3 GB rather than 2: the WinPE image is loaded into a RAM disk in its
+# entirety, and DISM works above that.
 run_qemu winpe 1800 -m 3072 -smp 2 \
   -drive file="$DISK",format=raw,if=none,id=hd,cache=writeback \
   -device ich9-ahci,id=ahci \

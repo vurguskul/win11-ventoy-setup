@@ -118,17 +118,19 @@ Two QEMU boots at build time, off the image's *own* ESP, where the boot chain
 is ordinary:
 
 1. **`winpe`** — the image's ESP is empty and `bcdboot` does not exist on
-   Linux. Rather than author a BCD by hand with hivex, the build boots the
-   ISO's own WinPE and lets Microsoft's tool write it, from a FAT32 disk with
-   a real ESP — OVMF reads UDF and FAT but has no ISO9660 driver, and this
-   xorriso cannot write UDF, so an ISO of our own gives the firmware nothing
-   to mount. `boot.wim` holds two images, and the build retargets its boot
-   index to **image 1, plain WinPE**: image 2 is Windows Setup, whose registry
-   carries `HKLM\SYSTEM\Setup\CmdLine=setup.exe`, so winlogon launches Setup
-   and [`startnet.cmd`](windows/winpe/startnet.cmd) never runs. That script
-   finds the Windows volume by looking for `winload.efi`, then reaches the ESP
-   with diskpart's `select volume` — which selects that volume's disk too, so
-   nothing depends on which disk number the image happens to get.
+   Linux. Rather than author a BCD by hand with hivex, the build boots a WinPE
+   and lets Microsoft's tool write it, from a FAT32 disk with a real ESP —
+   OVMF reads UDF and FAT but has no ISO9660 driver, and this xorriso cannot
+   write UDF, so an ISO of our own gives the firmware nothing to mount. The
+   WinPE is **`Winre.wim`, taken out of the image being built**, not the ISO's
+   `boot.wim`: boot.wim's WinPE cannot service an offline image at all (see
+   [Drivers](#drivers-and-why-the-list-is-all-network-adapters)), and WinRE
+   always matches what it is servicing. Deleting `winpeshl.ini` is what makes
+   it run [`startnet.cmd`](windows/winpe/startnet.cmd) instead of the recovery
+   shell. That script finds the Windows volume by looking for `winload.efi`,
+   then reaches the ESP with diskpart's `select volume` — which selects that
+   volume's disk too, so nothing depends on which disk number the image
+   happens to get.
 2. **`deploy`** — the image now boots natively. `specialize` succeeds, BFSVC
    writes boot entries into a real ESP, OOBE processes `unattend.xml`, and the
    last first-logon command powers the machine off. The build treats that
@@ -255,6 +257,22 @@ with a *basic data* partition rather than on the WinPE disk: WinPE does not
 assign drive letters to EFI System Partitions, which is also why the target
 ESP needs `diskpart` before `bcdboot` can write to it. The build prints every
 INF it found and fails if DISM does not report success.
+
+**Why WinRE and not the ISO's `boot.wim`.** DISM services an offline image by
+starting `dismhost.exe` and talking to it over COM. In the WinPE that ships in
+`boot.wim`, that object never arrives:
+
+```
+DismHostLib: Failed to create DismHostManager remote object (hr:0x80004002)
+DISM.EXE: Could not load the image session. HRESULT=80004002
+```
+
+— `Error: 0x80004002 / No such interface supported` on the console, before any
+driver is looked at. It is the WinPE that is broken, not the image: pointing
+DISM at WinPE's own RAM disk (`dism /image:X:\`) fails identically, every
+scratch directory fails the same way, and the two WIMs carry byte-identical
+DISM binaries on the same servicing stack. `Winre.wim` out of `install.wim`
+has a DISM that works, so that is what the `winpe` phase boots.
 
 ### Moving the stick between machines
 
