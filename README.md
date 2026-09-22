@@ -12,13 +12,28 @@ existing ISOs, persistence files and documents.
 ```bash
 cp windows/win11.conf.example windows/win11.conf   # edit ISO path, edition, size
 make list-editions                                 # see what your ISO contains
-make windows                                       # build + copy to the stick
+make windows                                       # build the VHDX into out/
+make install                                       # copy it onto the stick
 ```
 
 The build runs in a container, so the host needs only **docker** and
 **`/dev/kvm`** — no wimlib, no ntfs-3g, no qemu, no root, and no Windows
 machine. It prompts for the local account name and password and is otherwise
 unattended. Budget 30–60 minutes and ~60 GB free in `out/`.
+
+The two halves are kept apart on purpose. `make windows` writes only to `out/`,
+so the stick need not even be plugged in while an hour-long build runs, and a
+build that fails cannot have touched it. `make install` only reads
+`out/win11.vhdx` and writes it to the stick, so putting the image on a second
+stick — or on the one that was somewhere else at build time — costs a file copy
+rather than another build. It installs `ventoy_vhdboot.img` first if the stick
+does not have it yet.
+
+The copy reports progress: 17 GB over USB is the longest step on the host, and
+a silent one is indistinguishable from a hang. `pv` draws a bar with an ETA if
+it is installed, `dd` prints bytes and rate otherwise. The `sync` afterwards
+can take minutes of its own — the kernel acknowledges the write long before the
+stick has it — so it is announced rather than left to look like a stall.
 
 `make help` lists the rest of the targets.
 
@@ -32,7 +47,8 @@ at all: nothing inside it needs `bcdboot` for Ventoy's sake, and no
 
 `ventoy_vhdboot.img` ships separately from Ventoy, at
 [github.com/ventoy/vhdiso](https://github.com/ventoy/vhdiso/releases). `make
-vhdboot` fetches it and installs it. Without it the Ventoy menu prints *"Please
+vhdboot` fetches it and installs it, and `make install` does the same before
+copying an image. Without it the Ventoy menu prints *"Please
 put the right ventoy_vhdboot.img file to the 1st partition"* and stops.
 
 The image still gets a GPT **ESP + MSR + Windows** layout with a real BCD on

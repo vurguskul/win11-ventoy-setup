@@ -71,9 +71,28 @@ if [[ -n ${SIZE:-} ]]; then
 fi
 
 log "Copying to $DEST"
+info "$(human "$ACTUAL") over USB - expect this to take a while"
 # Nothing else on the stick is read or written - this is a plain file copy.
-cp --sparse=never "$SRC" "$DEST.part"
+#
+# It reports progress because it is the longest step on the host and a silent
+# half hour is indistinguishable from a hang. pv draws a bar with a percentage
+# and an ETA; dd is the fallback, since it is coreutils and therefore always
+# there. Both write the file out whole, as `cp --sparse=never` did: exFAT has
+# no holes to write into, and the stick pays the full size either way.
+if command -v pv >/dev/null 2>&1; then
+  pv -s "$ACTUAL" "$SRC" > "$DEST.part"
+else
+  dd if="$SRC" of="$DEST.part" bs=4M conv=fsync status=progress
+fi
+
+# The kernel acknowledges writes long before the stick has them: without this
+# the copy "finishes" at USB-3 speed and the stick keeps flushing for minutes.
+# Announced so that wait does not look like a hang either.
+log "Flushing the stick's cache"
 sync
+
+# The image only takes its real name once it is whole, so an interrupted copy
+# leaves a .part file rather than an image Ventoy would offer to boot.
 mv "$DEST.part" "$DEST"
 sync
 

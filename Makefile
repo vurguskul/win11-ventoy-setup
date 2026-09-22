@@ -9,15 +9,14 @@
 SHELL := /bin/bash
 IMAGE := win11-ventoy-build
 
-.PHONY: help image list-editions vhdboot drivers build windows copy repair test-boot screenshot shell clean
+.PHONY: help image list-editions vhdboot drivers windows install repair test-boot screenshot shell clean
 
 help:
 	@echo "make list-editions   list the Windows editions in the ISO"
 	@echo "make vhdboot         install ventoy_vhdboot.img on the stick (once)"
 	@echo "make drivers         fetch the driver packages in windows/drivers.txt"
-	@echo "make windows         build the Win11 VHDX and copy it to the stick"
-	@echo "make build           build the VHDX only, leave the stick alone"
-	@echo "make copy            copy an already-built VHDX to the stick"
+	@echo "make windows         build the Win11 VHDX in out/, leave the stick alone"
+	@echo "make install         copy the built VHDX to the stick"
 	@echo "make repair          recover the stick's image after a failed update"
 	@echo "make image           (re)build the build container"
 	@echo "make shell           open a shell in the build container"
@@ -40,12 +39,15 @@ vhdboot:
 drivers:
 	@windows/fetch-drivers.sh
 
-build:
+# Build only: nothing here touches the stick, so the stick need not even be
+# plugged in. The image lands in out/win11.vhdx.
+windows: drivers
 	@windows/build.sh
 
-windows: vhdboot drivers build copy
-
-copy:
+# Stick only: takes the image out/win11.vhdx already holds. vhdboot runs first
+# because a stick without ventoy_vhdboot.img cannot boot a VHD at all, and it
+# is a no-op once installed.
+install: vhdboot
 	@windows/copy-to-stick.sh
 
 # For an image that no longer boots because Windows Update left an update half
