@@ -111,12 +111,13 @@ the same way.
 `<HideOnlineAccountScreens>` is the element that matters — without it Windows 11
 parks on "Sign in with Microsoft" with no way past.
 
-The account name is asked at the start of the build, defaulting to your host
-account, and checked there against Windows' rules for a local name — length,
-forbidden characters, the built-in names — because the account is created deep
-inside the deploy boot, where a rejected name means a finished image you cannot
-log in to. Set `USERNAME` in `windows/win11.conf`, or pass `--user`, to answer
-ahead of time and skip the prompt.
+The account name is asked at the start of the build — there is no default, so
+nothing about the host you built on ends up in the image. It is checked against
+Windows' rules for a local name (length, forbidden characters, the built-in
+names) before anything else runs, because the account is created deep inside
+the deploy boot, where a rejected name means a finished image you cannot log in
+to. Set `USERNAME` in `windows/win11.conf`, or pass `--user`, to answer ahead
+of time and skip the question.
 
 The password never lands in the repo. `windows/build.sh` prompts for it on the
 host, encodes it the way unattend expects, and passes it to the container on

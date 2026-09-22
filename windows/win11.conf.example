@@ -20,9 +20,9 @@ SIZE="48G"
 # decides how much of the stick the image eats.
 BLOCK_SIZE="1M"
 
-# Local account created by unattend.xml. Set USERNAME to skip the prompt;
-# leave it unset and windows/build.sh asks for the name at the start of the
-# build, defaulting to your host account. The password is never stored here -
+# Local account created by unattend.xml. Set USERNAME to skip the question;
+# leave it unset and windows/build.sh asks which name to create at the start
+# of the build. The password is never stored here -
 # build.sh prompts for it on the host and passes it to the container on stdin,
 # so it never lands in a file or an environment variable.
 #USERNAME="me"

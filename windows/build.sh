@@ -122,25 +122,42 @@ fi
 
 [[ -n $EDITION ]] || die "no edition given; run 'make list-editions' first"
 
-# Who the image belongs to is asked rather than defaulted, so the repo carries
-# nobody's name. win11.conf or --user answers it ahead of time and skips the
-# prompt. The checks are here because unattend.xml creates the account during
-# the deploy boot: a name Windows refuses surfaces as a finished image with no
-# way to log in, an hour after the mistake was made.
-if [[ -z $USERNAME ]]; then
-  DEFAULT_USER="${SUDO_USER:-${USER:-user}}"
-  read -rp "    Local account name [$DEFAULT_USER]: " USERNAME
-  USERNAME="${USERNAME:-$DEFAULT_USER}"
-fi
+# Who the image belongs to is asked outright: no default, and nothing about
+# the host leaks into the image just because it is what the build ran on.
+# win11.conf or --user answers ahead of time and skips the question.
+#
+# unattend.xml creates the account during the deploy boot, so a name Windows
+# refuses is caught here or not at all - otherwise it surfaces as a finished
+# image with no way to log in, an hour after the mistake was made.
 # The ] is first so bash reads the rest of the set literally.
 USER_BAD_CHARS=']"/\[:;|=,+*?<>@'
-(( ${#USERNAME} <= 20 )) || die "account name is over Windows' 20-character limit: $USERNAME"
-[[ -z ${USERNAME//[^$USER_BAD_CHARS]/} ]] || die "account name uses a character Windows does not allow (${USERNAME//[^$USER_BAD_CHARS]/}): $USERNAME"
-[[ -n ${USERNAME//[. ]/} ]] || die "account name cannot be only dots and spaces"
-case "${USERNAME,,}" in
-  administrator|guest|system|defaultaccount|wdagutilityaccount)
-    die "$USERNAME is a built-in Windows account; pick another name" ;;
-esac
+# Prints why a name is unusable, or nothing at all.
+username_problem() {
+  local name=$1 bad=${1//[^$USER_BAD_CHARS]/}
+  if   [[ -z $name ]];          then printf 'an account name is required'
+  elif (( ${#name} > 20 ));     then printf "'%s' is over Windows' 20-character limit" "$name"
+  elif [[ -n $bad ]];           then printf "'%s' uses characters Windows does not allow: %s" "$name" "$bad"
+  elif [[ -z ${name//[. ]/} ]]; then printf 'an account name cannot be only dots and spaces'
+  else
+    case "${name,,}" in
+      administrator|guest|system|defaultaccount|wdagutilityaccount)
+        printf "'%s' is a built-in Windows account" "$name" ;;
+    esac
+  fi
+}
+
+if [[ -n $USERNAME ]]; then
+  PROBLEM=$(username_problem "$USERNAME")
+  [[ -z $PROBLEM ]] || die "$PROBLEM; fix USERNAME in win11.conf or pass --user"
+else
+  while :; do
+    read -rp "    Local account name to create in Windows: " USERNAME ||
+      die "no account name given"
+    PROBLEM=$(username_problem "$USERNAME")
+    [[ -n $PROBLEM ]] || break
+    warn "$PROBLEM"
+  done
+fi
 CMD+=(--user "$USERNAME")
 
 # The password is encoded here and handed over on stdin. It never appears in a
