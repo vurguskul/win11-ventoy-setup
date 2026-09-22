@@ -17,7 +17,7 @@ make windows                                       # build + copy to the stick
 
 The build runs in a container, so the host needs only **docker** and
 **`/dev/kvm`** — no wimlib, no ntfs-3g, no qemu, no root, and no Windows
-machine. It prompts once for the local account password and is otherwise
+machine. It prompts for the local account name and password and is otherwise
 unattended. Budget 30–60 minutes and ~60 GB free in `out/`.
 
 `make help` lists the rest of the targets.
@@ -110,6 +110,13 @@ the same way.
 `C:\Windows\Panther\unattend.xml` and processed during the `deploy` boot.
 `<HideOnlineAccountScreens>` is the element that matters — without it Windows 11
 parks on "Sign in with Microsoft" with no way past.
+
+The account name is asked at the start of the build, defaulting to your host
+account, and checked there against Windows' rules for a local name — length,
+forbidden characters, the built-in names — because the account is created deep
+inside the deploy boot, where a rejected name means a finished image you cannot
+log in to. Set `USERNAME` in `windows/win11.conf`, or pass `--user`, to answer
+ahead of time and skip the prompt.
 
 The password never lands in the repo. `windows/build.sh` prompts for it on the
 host, encodes it the way unattend expects, and passes it to the container on
@@ -303,7 +310,7 @@ docker/Dockerfile              the build environment; nothing else is installed
 lib/common.sh                  shared helpers
 lib/winpe.sh                   building and booting a WinPE disk; shared
 ventoy/fetch-vhdboot.sh        install ventoy_vhdboot.img on the stick
-windows/build.sh               host side of the build: inputs, password
+windows/build.sh               host side of the build: inputs, account, password
 windows/build-vhdx.sh          the build pipeline, inside the container
 windows/repair.sh              host side of the repair: copy off the stick
 windows/repair-vhdx.sh         the repair, inside the container

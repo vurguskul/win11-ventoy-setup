@@ -50,7 +50,7 @@ source "$ROOT/lib/winpe.sh"
 # --- config -------------------------------------------------------------------
 
 ISO=""; EDITION=""; SIZE="48G"; BLOCK_SIZE="1M"; DRIVERS=""
-USERNAME="egor"; COMPUTERNAME="WIN11-USB"
+USERNAME="user"; COMPUTERNAME="WIN11-USB"
 LOCALE="en-GB"; INPUTLOCALE="en-GB"; TIMEZONE="GMT Standard Time"
 WORK="/work"; OUT=""
 LIST_ONLY=0; STOP_AFTER=""; DEPLOY_TIMEOUT="${DEPLOY_TIMEOUT:-2700}"; PW_STDIN=0

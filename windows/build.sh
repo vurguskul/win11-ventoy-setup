@@ -20,7 +20,7 @@ IMAGE="${IMAGE:-win11-ventoy-build}"
 # on the command line - is passed to it explicitly. Leaving a value unset and
 # relying on the two sides agreeing on a default is how EDITION silently failed
 # to arrive.
-ISO=""; EDITION=""; SIZE=""; BLOCK_SIZE=""; USERNAME="egor"; COMPUTERNAME=""
+ISO=""; EDITION=""; SIZE=""; BLOCK_SIZE=""; USERNAME=""; COMPUTERNAME=""
 LOCALE=""; INPUTLOCALE=""; TIMEZONE=""; LIST_ONLY=0
 DRIVERS_DIR=""
 PASS_THROUGH=()
@@ -86,7 +86,6 @@ opt() { [[ -n $2 ]] && CMD+=("$1" "$2"); return 0; }
 opt --edition      "$EDITION"
 opt --size         "$SIZE"
 opt --block-size   "$BLOCK_SIZE"
-opt --user         "$USERNAME"
 opt --computer     "$COMPUTERNAME"
 opt --locale       "$LOCALE"
 opt --input-locale "$INPUTLOCALE"
@@ -122,6 +121,27 @@ if (( LIST_ONLY )); then
 fi
 
 [[ -n $EDITION ]] || die "no edition given; run 'make list-editions' first"
+
+# Who the image belongs to is asked rather than defaulted, so the repo carries
+# nobody's name. win11.conf or --user answers it ahead of time and skips the
+# prompt. The checks are here because unattend.xml creates the account during
+# the deploy boot: a name Windows refuses surfaces as a finished image with no
+# way to log in, an hour after the mistake was made.
+if [[ -z $USERNAME ]]; then
+  DEFAULT_USER="${SUDO_USER:-${USER:-user}}"
+  read -rp "    Local account name [$DEFAULT_USER]: " USERNAME
+  USERNAME="${USERNAME:-$DEFAULT_USER}"
+fi
+# The ] is first so bash reads the rest of the set literally.
+USER_BAD_CHARS=']"/\[:;|=,+*?<>@'
+(( ${#USERNAME} <= 20 )) || die "account name is over Windows' 20-character limit: $USERNAME"
+[[ -z ${USERNAME//[^$USER_BAD_CHARS]/} ]] || die "account name uses a character Windows does not allow (${USERNAME//[^$USER_BAD_CHARS]/}): $USERNAME"
+[[ -n ${USERNAME//[. ]/} ]] || die "account name cannot be only dots and spaces"
+case "${USERNAME,,}" in
+  administrator|guest|system|defaultaccount|wdagutilityaccount)
+    die "$USERNAME is a built-in Windows account; pick another name" ;;
+esac
+CMD+=(--user "$USERNAME")
 
 # The password is encoded here and handed over on stdin. It never appears in a
 # command line, an environment variable, or a file on disk - docker inspect and
