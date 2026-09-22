@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared helpers for boot-media build scripts.
+# Shared helpers for win11-ventoy-setup build scripts.
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 info() { printf '    %s\n' "$*"; }

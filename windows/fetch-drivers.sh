@@ -14,7 +14,7 @@ ROOT="$(cd "$HERE/.." && pwd)"
 # shellcheck source=../lib/common.sh
 source "$ROOT/lib/common.sh"
 
-IMAGE="${IMAGE:-boot-media-build}"
+IMAGE="${IMAGE:-win11-ventoy-build}"
 MANIFEST="${1:-$ROOT/windows/drivers.txt}"
 DEST="$ROOT/windows/drivers"
 

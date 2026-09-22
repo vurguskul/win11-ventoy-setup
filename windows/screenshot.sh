@@ -15,7 +15,7 @@ ROOT="$(cd "$HERE/.." && pwd)"
 source "$ROOT/lib/common.sh"
 
 PORT="${QMP_PORT:-4444}"
-OUT="${1:-/tmp/boot-media-screen.png}"
+OUT="${1:-/tmp/win11-ventoy-screen.png}"
 
 need python3
 

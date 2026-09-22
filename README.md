@@ -1,15 +1,13 @@
-# boot-media
+# win11-ventoy-setup
 
-Builds bootable media for a Ventoy USB stick. Everything here is **additive**:
-no script formats, repartitions, or reinstalls Ventoy, and none of them touch
-files they did not create. The stick keeps its existing ISOs, persistence
-files, and documents.
+Builds a natively-bootable Windows 11 VHDX for a Ventoy USB stick, from an ISO,
+on Linux. Windows Setup is finished *before* the image reaches the stick, so it
+boots straight to the login screen of a local account with no Microsoft account
+prompt.
 
-## Windows 11 on Ventoy
-
-A natively-bootable Windows 11 VHDX, built from an ISO on Linux, with a local
-account and no Microsoft account prompt. Windows Setup is finished *before* the
-image reaches the stick, so it boots straight to the login screen.
+Everything here is **additive**: nothing formats, repartitions or reinstalls
+Ventoy, and no script touches files it did not create. The stick keeps its
+existing ISOs, persistence files and documents.
 
 ```bash
 cp windows/win11.conf.example windows/win11.conf   # edit ISO path, edition, size
@@ -18,177 +16,109 @@ make windows                                       # build + copy to the stick
 ```
 
 The build runs in a container, so the host needs only **docker** and
-**`/dev/kvm`** — no wimlib, no ntfs-3g, no qemu, and no root. It prompts once
-for the local account password and is otherwise unattended. Budget 30–60
-minutes and ~60 GB free in `out/`: most of it is applying the WIM and running
-Windows Setup once inside QEMU.
+**`/dev/kvm`** — no wimlib, no ntfs-3g, no qemu, no root, and no Windows
+machine. It prompts once for the local account password and is otherwise
+unattended. Budget 30–60 minutes and ~60 GB free in `out/`.
 
-### How it boots
+`make help` lists the rest of the targets.
 
-Ventoy's grub does this (see `grub/grub.cfg` on the stick's VTOYEFI partition,
-`vhdboot_common_func`):
+## How it boots
 
-```
-vt_load_vhdboot  ventoy/ventoy_vhdboot.img   load a boot image into RAM
-vt_patch_vhdboot "<your.vhdx>"               patch its BCD to point at the VHDX
-chainloader ... memdisk:<patched image>      boot it
-```
+Ventoy's grub loads `ventoy/ventoy_vhdboot.img` into RAM, patches its BCD to
+point at your VHDX, and chainloads it. **bootmgr and the BCD come from Ventoy,
+not from inside the VHDX** — which is what makes the image buildable on Linux
+at all: nothing inside it needs `bcdboot` for Ventoy's sake, and no
+`BCD-SYS`-style BCD authoring is involved.
 
-**bootmgr and the BCD come from Ventoy, not from inside the VHDX.** That single
-fact is what makes this buildable on Linux at all:
+`ventoy_vhdboot.img` ships separately from Ventoy, at
+[github.com/ventoy/vhdiso](https://github.com/ventoy/vhdiso/releases). `make
+vhdboot` fetches it and installs it. Without it the Ventoy menu prints *"Please
+put the right ventoy_vhdboot.img file to the 1st partition"* and stops.
 
-- the VHDX needs no `bcdboot` for Ventoy's sake, and nothing inside it is used
-  to boot
-- no Windows machine, and no `BCD-SYS`-style BCD authoring, is involved
+The image still gets a GPT **ESP + MSR + Windows** layout with a real BCD on
+its ESP. Ventoy ignores both; they exist so Setup can be finished at build
+time.
 
-The image does still get a GPT **ESP + MSR + Windows** layout, and its ESP does
-get a real BCD — not for Ventoy, which ignores both, but so that Setup can be
-finished at build time. The next two sections are about why.
+## Why Setup runs at build time
 
-`ventoy_vhdboot.img` ships separately from Ventoy itself, at
-[github.com/ventoy/vhdiso](https://github.com/ventoy/vhdiso/releases).
-`make vhdboot` fetches it and installs it at `/ventoy/ventoy_vhdboot.img`.
-Without it the Ventoy menu prints *"Please put the right ventoy_vhdboot.img
-file to the 1st partition"* and stops.
+`install.wim` is applied with `wimapply` rather than installed in a VM. A VM
+install binds Windows 11 to the VM's virtual TPM and the result dies at boot on
+real hardware, which is what the usual pile of `LabConfig` registry bypasses is
+for. Applying the WIM never runs Setup's *install* phase, so there is no
+hardware check to bypass and no TPM to inherit.
 
-### Why the WIM is applied directly instead of installing in a VM
+Setup's **out-of-box** phase still has to run once, and it cannot run on the
+stick. It wants a system partition, and under Ventoy the firmware boot device
+is a memdisk with no NT path, so both `Sysprep-SpBcd` and `MungeBootEntries`
+fail with `0xc0000452`, `STATUS_SYSTEM_DEVICE_NOT_FOUND`. Windows resolves the
+system partition from the device the *firmware* booted from, never by scanning
+the OS disk — so giving the image an ESP does not help, dropping `SpBcd` from
+`Specialize.xml` only moves the failure one stage later, and
+`HKLM\SYSTEM\Setup\SystemPartition` is a dead end because
+`\Device\HarddiskVolumeN` numbering is assigned at boot by the host machine.
 
-The common way to make a Windows VHD is to install it inside VirtualBox or
-QEMU and move the disk out. For Windows 11 that is exactly the recipe that
-fails on Ventoy — Setup binds the install to the VM's virtual TPM, and the
-result dies at boot on real hardware. The usual workaround is a pile of
-`LabConfig` registry bypasses.
+So the out-of-box phase runs during the build instead, in two QEMU boots off
+the image's *own* ESP, where the boot chain is ordinary:
 
-Applying `install.wim` with `wimapply` never runs Windows Setup's *install*
-phase, so there is no hardware check to bypass and no TPM binding to inherit.
-No `LabConfig` keys are needed, and no TPM is attached to the build VM either.
-
-Setup's **out-of-box** phase still runs, though, and that is the part that
-takes work.
-
-### The system partition Ventoy cannot provide
-
-Applying the WIM leaves `HKLM\SYSTEM\Setup\CmdLine` set, so the first boot runs
-`setup.exe -newsetup` — Setup's out-of-box phase, which performs the
-`specialize` and `oobeSystem` passes and processes `unattend.xml`. That phase
-wants a **system partition**, and under Ventoy there is never one.
-
-Setup logs the reason itself:
-
-```
-LogBootDeviceInfo: The firmware boot device ARC path is [multi(0)disk(0)cdrom(0)]
-                   and NT path is [].
-LogBootDeviceInfo: The system boot device ARC path is
-                   [multi(0)disk(0)vdisk(0)partition(3)]
-                   and NT path is [\Device\Harddisk1\Partition3].
-```
-
-The OS half resolves to the VHDX's Windows volume, which is why the install
-runs at all. The firmware half is Ventoy's memdisk and has **no NT path**.
-
-Two separate components then fail on it, both with the same status:
-
-```
-SYSPRP BCD: Failed to get system partition. Status: c0000452      <- Sysprep-SpBcd
-IBSLIB BFSVC: Failed to get partition name. Status = 0xc0000452   <- MungeBootEntries
-```
-
-`0xc0000452` is `STATUS_SYSTEM_DEVICE_NOT_FOUND`, and the emphasis belongs on
-*system device*: Windows resolves the system partition from the device the
-**firmware** booted from, not by scanning the OS disk for a partition carrying
-the ESP type GUID. Three things follow:
-
-- **Giving the image an ESP does not help.** Setup leaves it untouched — the
-  volume still carries its `mkfs.fat` signature afterwards.
-- **Deleting `Microsoft-Windows-Sysprep-SpBcd` from `Specialize.xml` only moves
-  the failure.** `specialize` then completes, and Setup dies one stage later in
-  `CallBack_MungeBootEntries` with *"Windows could not update the computer's
-  boot configuration. Installation cannot proceed."*
-- **`HKLM\SYSTEM\Setup\SystemPartition` is a dead end.** It exists in the
-  applied image, holding a stale `\Device\HarddiskVolume1`, and
-  `\Device\HarddiskVolumeN` numbering is assigned at boot from the volumes the
-  host machine has — unfixable for a stick that moves between machines.
-
-So the out-of-box phase cannot be made to work on the stick. It runs during the
-build instead.
-
-### Where Setup runs instead
-
-Two QEMU boots at build time, off the image's *own* ESP, where the boot chain
-is ordinary:
-
-1. **`winpe`** — the image's ESP is empty and `bcdboot` does not exist on
-   Linux. Rather than author a BCD by hand with hivex, the build boots a WinPE
-   and lets Microsoft's tool write it, from a FAT32 disk with a real ESP —
-   OVMF reads UDF and FAT but has no ISO9660 driver, and this xorriso cannot
-   write UDF, so an ISO of our own gives the firmware nothing to mount. The
-   WinPE is **`Winre.wim`, taken out of the image being built**, not the ISO's
-   `boot.wim`: boot.wim's WinPE cannot service an offline image at all (see
-   [Drivers](#drivers-and-why-the-list-is-all-network-adapters)), and WinRE
-   always matches what it is servicing. Deleting `winpeshl.ini` is what makes
-   it run [`startnet.cmd`](windows/winpe/startnet.cmd) instead of the recovery
-   shell. That script finds the Windows volume by looking for `winload.efi`,
-   then reaches the ESP with diskpart's `select volume` — which selects that
-   volume's disk too, so nothing depends on which disk number the image
-   happens to get.
+1. **`winpe`** — writes the image's BCD with `bcdboot`, and injects drivers
+   with DISM. The WinPE is **`Winre.wim` taken out of the image being built**,
+   not the ISO's `boot.wim`: in boot.wim's WinPE, DISM cannot reach
+   `dismhost.exe` over COM (`hr:0x80004002`) and services nothing offline, not
+   even its own RAM disk. Deleting `winpeshl.ini` is what makes it run
+   [`startnet.cmd`](windows/winpe/startnet.cmd) instead of the recovery shell.
+   That script finds the Windows volume by looking for `winload.efi`, so
+   nothing depends on which disk number the image gets.
 2. **`deploy`** — the image boots natively from that BCD. `specialize`
    succeeds, BFSVC writes boot entries into a real ESP, OOBE processes
-   `unattend.xml`, and the last first-logon command powers the machine off.
-   The build treats that power-off as the success signal — it only runs if
-   OOBE got that far — then carves the NTFS volume back out and checks that
-   `C:\Users\<you>` exists and that `setupact.log` reached
-   `IMAGE_STATE_COMPLETE`.
+   `unattend.xml`, and the last first-logon command powers the machine off. The
+   build treats that power-off as the success signal, then carves the NTFS
+   volume back out and checks that `C:\Users\<you>` exists and `setupact.log`
+   reached `IMAGE_STATE_COMPLETE`.
 
-Screenshots of both guests land in `out/` every minute, which is the only way
-to see what a `-display none` VM is stuck on.
+Screenshots of both guests land in `out/` every minute — the only way to see
+what a `-display none` VM is stuck on.
 
 By the time the VHDX reaches the stick, `HKLM\SYSTEM\Setup\CmdLine` is clear
-and Setup never runs again — so what Ventoy's memdisk does or does not provide
-stops mattering. Ventoy still supplies the bootmgr and BCD that actually boot
-it; the image's own ESP goes unused at runtime.
+and Setup never runs again, so what Ventoy's memdisk does not provide stops
+mattering.
 
-### The container, and why nothing needs root
+## Why nothing needs root
 
 No step touches a kernel block device. Every filesystem is created and
-populated as a plain file, which is what keeps the container unprivileged — it
-runs as your own uid, with no `qemu-nbd` to attach, no `mount`, no `sudo`, and
-no retry loop around the nbd module's startup races.
+populated as a plain file: `sgdisk` writes the GPT into the disk file, `mkntfs
+--partition-start` formats the NTFS file (a file answers no geometry ioctls, so
+the start LBA is passed explicitly, and `hidden_sectors` must match it or
+Windows cannot find the volume), `wimapply` applies into that file through
+libntfs-3g, `mtools` reads the ESP back out of the assembled disk with an
+`offset=` drive definition, and `dd` puts the partitions together. The ISO is
+read with `7z`, because `install.wim` is 7.6 GB and exists only in the UDF
+filesystem, past ISO9660's 4 GB limit.
 
-| Step | How |
-| --- | --- |
-| read the ISO | `7z` — install.wim is 7.6 GB so it lives only in the ISO's UDF filesystem, past ISO9660's 4 GB limit; libarchive sees two entries, and a loop mount would need privileges |
-| partition | `sgdisk` writes the GPT into the disk file |
-| format | `mkfs.vfat`; `mkntfs --partition-start` on the NTFS file — a file answers no geometry ioctls, so the start LBA is passed explicitly, and `hidden_sectors` must equal it or Windows cannot locate the volume within the disk |
-| apply the WIM | `wimapply` to the NTFS **file**: libntfs-3g takes a regular file, and its backend is what preserves security descriptors, hard links, short names and reparse points |
-| `unattend.xml` | injected into the WIM with `wimupdate`, since `ntfscp` cannot create `\Windows\Panther` |
-| assemble | `dd` each partition into the disk image at its own offset |
-| inspect the ESP | `mtools` with an `offset=` drive definition, reading straight out of the assembled disk |
-| convert | `qemu-img convert -O vhdx` |
+The container therefore runs as your own uid, with no `qemu-nbd`, no `mount`
+and no `sudo`.
 
 `make shell` opens a shell in the same image with `out/` mounted at `/work`.
 `windows/build-vhdx.sh --stop-after <stage>` stops after `extract`, `volumes`,
-`apply`, `assemble`, `winpe`, `deploy` or `verify`, and `--reuse-disk` keeps an
-existing `out/disk.raw` and starts at the `winpe` phase — a failed boot phase
-should not cost another eight-minute WIM apply. The ISO extraction in
-`out/iso/` is cached across runs the same way.
+`apply`, `assemble`, `winpe`, `deploy` or `verify`; `--reuse-disk` keeps an
+existing `out/disk.raw` and starts at `winpe`, so a failed boot phase does not
+cost another eight-minute WIM apply. The ISO extraction in `out/iso/` is cached
+the same way.
 
-### The local account
+## The local account
 
 `windows/unattend/unattend.xml.tmpl` is rendered into
 `C:\Windows\Panther\unattend.xml` and processed during the `deploy` boot.
 `<HideOnlineAccountScreens>` is the element that matters — without it Windows 11
 parks on "Sign in with Microsoft" with no way past.
 
-The password is never written to the repo. `windows/build.sh` prompts for it on
-the host, encodes it the way unattend expects (base64 of UTF-16LE of password +
-element name) and passes it to the container on **stdin** — never as an
-argument or an environment variable, both of which `docker inspect` and the
-process list would show.
+The password never lands in the repo. `windows/build.sh` prompts for it on the
+host, encodes it the way unattend expects, and passes it to the container on
+**stdin** — never as an argument or an environment variable, both of which
+`docker inspect` and the process list would show.
 
-The template also sets a **one-time auto-logon** (`LogonCount` 1). OOBE ends at
-the lock screen, and `FirstLogonCommands` only run when someone signs in — so
-without it the build's own shutdown never fires and the deploy phase waits
-until it times out. It is spent during the build; the machine you boot from the
+The template also sets a **one-time auto-logon** (`LogonCount` 1), because
+`FirstLogonCommands` only run when someone signs in and OOBE otherwise ends at
+the lock screen. It is spent during the build; the machine you boot from the
 stick comes up at the login screen like any other.
 
 Six first-logon commands run, once, during the build:
@@ -196,27 +126,20 @@ Six first-logon commands run, once, during the build:
 | Command | Why |
 | --- | --- |
 | `diskpart` SAN policy `OfflineAll` | stops Windows mounting and writing to the internal disks of whatever host it is booted on |
-| `PreventDeviceEncryption=1` | device encryption would bind the install to one machine's TPM and make it unbootable on the next |
-| `powercfg /h off`, `HiberbootEnabled=0` | fast startup makes a "shut down" a kernel hibernate, and resuming that on a different machine bugchecks or corrupts the volume; see [Moving the stick between machines](#moving-the-stick-between-machines) |
-| `DenyDeviceClasses` for the Firmware class | a BIOS update from Windows Update cannot complete on this image and leaves it in a reboot loop; see [BIOS updates](#bios-updates-and-the-boot-loop-they-cause) |
-| clear `AutoAdminLogon` / `DefaultPassword` | Windows is meant to drop these once `LogonCount` runs out; doing it explicitly means the shipped image cannot be carrying a plaintext password even if it does not |
-| `shutdown /s /t 0` | OOBE runs inside QEMU, so the image puts itself away when it is done; the build waits for that power-off |
+| `PreventDeviceEncryption=1` | device encryption would bind the install to one machine's TPM |
+| `powercfg /h off`, `HiberbootEnabled=0` | fast startup makes a "shut down" a kernel hibernate; see [Moving between machines](#moving-between-machines) |
+| `DenyDeviceClasses` for the Firmware class | see [BIOS updates](#bios-updates-and-the-boot-loop-they-cause) |
+| clear `AutoAdminLogon` / `DefaultPassword` | the shipped image cannot be carrying a plaintext password even if Windows fails to drop these itself |
+| `shutdown /s /t 0` | the image puts itself away when OOBE is done, and the build waits for that power-off |
 
-### Drivers, and why the list is all network adapters
+## Drivers
 
-`install.wim`'s only display driver is `basicdisplay.inf`. On real hardware
-that is the **Microsoft Basic Display Adapter** — a framebuffer sitting at
-whatever mode the firmware's GOP left behind, with no way to drive the
-machine's other display pipes. It looks like an odd resolution on the laptop
-panel and an external monitor that never lights up. There is no inbox driver
-for any modern GPU — not Intel, not AMD, not NVIDIA.
-
-Windows Update fixes that on first boot, for free, with the right driver for
-whatever GPU it finds. What it cannot do is bootstrap itself: a laptop whose
-Wi-Fi card has no inbox driver has no network, so it never reaches Windows
-Update, so it never gets the GPU driver either. **Networking is the only thing
-that has to be in the image.** Everything else follows from it — and a
-graphics package is 500–900 MB for one machine's GPU, against ~190 MB for
+`install.wim`'s only display driver is `basicdisplay.inf` — a framebuffer stuck
+at whatever mode the firmware's GOP left behind, with no inbox driver for any
+modern GPU. Windows Update fixes that on first boot, for free, but it cannot
+bootstrap itself: a laptop whose Wi-Fi card has no inbox driver never reaches
+Windows Update. **Networking is the only thing that has to be in the image.** A
+graphics package is 500–900 MB for one machine's GPU, against ~190 MB of
 network drivers covering most machines you will meet.
 
 So `windows/drivers.txt` lists network adapters, by hardware ID:
@@ -225,102 +148,71 @@ So `windows/drivers.txt` lists network adapters, by hardware ID:
 intel-wifi          PCI\VEN_8086&DEV_51F0
 mediatek-wifi-7921  PCI\VEN_14C3&DEV_7961
 realtek-lan         PCI\VEN_10EC&DEV_8168
-...
 ```
 
 `make drivers` — which `make windows` runs for you — looks each one up in the
-**Microsoft Update Catalog** and fetches it. That is where Windows Update
-itself gets drivers, so the answer to a hardware-ID query is the driver
-Windows would have installed anyway, delivered as a plain `.cab` of INF files
-with no installer wrapper to defeat. `lspci -nn` gives you the IDs on the
-Linux side: `8086:9a78` is spelled `PCI\VEN_8086&DEV_9A78` here. A direct URL
-works as an entry too, and anything dropped into `windows/drivers/` by hand is
-injected just the same — `windows/drivers/README.md` covers that.
+**Microsoft Update Catalog**, which is where Windows Update itself gets
+drivers: the answer to a hardware-ID query is the driver Windows would have
+installed anyway, as a plain `.cab` with no installer wrapper to defeat. `lspci
+-nn` gives you the IDs (`8086:9a78` is spelled `PCI\VEN_8086&DEV_9A78`). A
+direct URL works as an entry too, and anything dropped into `windows/drivers/`
+by hand is injected just the same; see
+[`windows/drivers/README.md`](windows/drivers/README.md).
 
-The shipped list is 11 packages, ~60 MB downloaded, ~190 MB in the driver
-store, carrying ~128 device IDs: Intel AX201–AX411 and BE200, MediaTek
-MT7921/7922/7925, Qualcomm WCN685x, Realtek RTL8852AE/BE, Realtek and Intel
-Ethernet, and an RTL8153 USB dongle as a last resort. Coverage comes from each
-package's INFs rather than from the vendor's description — the MT7922 package
-does not cover MT7921, and the RTL8852BE one does not cover RTL8852AE. What
-this ISO already has inbox stays out of the list: Intel AX200/AX210, Realtek
-RTL8821CE/8822CE, Qualcomm QCA6174, Intel I219/I225, ASIX USB Ethernet, and
-RNDIS — so a phone on a USB cable is the escape hatch when nothing else
-matches.
+The shipped list is 11 packages, ~60 MB downloaded, carrying ~128 device IDs:
+Intel AX201–AX411 and BE200, MediaTek MT7921/7922/7925, Qualcomm WCN685x,
+Realtek RTL8852AE/BE, Realtek and Intel Ethernet, and an RTL8153 USB dongle as
+a last resort. Coverage comes from each package's INFs rather than the vendor's
+description — the MT7922 package does not cover MT7921. What the ISO already
+has inbox stays out: Intel AX200/AX210, Realtek RTL8821CE/8822CE, Qualcomm
+QCA6174, Intel I219/I225, ASIX USB Ethernet, and RNDIS, so a phone on a USB
+cable is the escape hatch when nothing else matches.
 
 Each package is fetched once into `windows/drivers/<name>/` and then left
-alone, so the drivers an image was built with do not change underneath you
-between builds; delete the directory to take a newer one.
+alone, so the drivers an image was built with do not change underneath you;
+delete the directory to take a newer one. They are injected during the `winpe`
+phase that runs anyway, so they cost no extra boot, and they ride in on a disk
+of their own with a *basic data* partition because WinPE assigns no drive
+letters to ESPs.
 
-**How they get in.** DISM, in the WinPE phase that runs anyway for `bcdboot`,
-so it costs no extra boot. The packages are carried in on a disk of their own
-with a *basic data* partition rather than on the WinPE disk: WinPE does not
-assign drive letters to EFI System Partitions, which is also why the target
-ESP needs `diskpart` before `bcdboot` can write to it. The build prints every
-INF it found and fails if DISM does not report success.
+## Moving between machines
 
-**Why WinRE and not the ISO's `boot.wim`.** DISM services an offline image by
-starting `dismhost.exe` and talking to it over COM. In the WinPE that ships in
-`boot.wim`, that object never arrives:
+Injected drivers cost nothing until the hardware they match turns up, and the
+driver store *accumulates* rather than replaces. Get the Intel laptop online
+and Windows Update gives it an Intel GPU driver; boot the AMD box and Windows
+Update adds a Radeon one next to it. Both machines stay correct. The only price
+is driver-store space, which never shrinks — `pnputil /enum-drivers` shows what
+has piled up, and Disk Cleanup's "Device driver packages" prunes superseded
+versions.
 
-```
-DismHostLib: Failed to create DismHostManager remote object (hr:0x80004002)
-DISM.EXE: Could not load the image session. HRESULT=80004002
-```
+Stick to what Windows Update delivers. Vendor installer `.exe`s (Intel Graphics
+Software, AMD Adrenalin) also install services and tray apps that assume their
+GPU is present, and on a roaming image you end up carrying two vendors' broken
+background services.
 
-— `Error: 0x80004002 / No such interface supported` on the console, before any
-driver is looked at. It is the WinPE that is broken, not the image: pointing
-DISM at WinPE's own RAM disk (`dism /image:X:\`) fails identically, every
-scratch directory fails the same way, and the two WIMs carry byte-identical
-DISM binaries on the same servicing stack. `Winre.wim` out of `install.wim`
-has a DISM that works, so that is what the `winpe` phase boots.
-
-### Moving the stick between machines
-
-Injected drivers cost nothing until the hardware they match turns up — PnP
-binds by hardware ID and ignores the rest — and the driver store *accumulates*
-rather than replaces. Get the Intel laptop online and Windows Update gives it
-an Intel GPU driver; boot the AMD box and Windows Update adds a Radeon one
-next to it. Both machines stay correct, and each keeps its own binding. The
-only price is driver-store space, which never shrinks: `pnputil /enum-drivers`
-shows what has piled up, and Disk Cleanup's "Device driver packages" prunes
-superseded versions.
-
-Stick to what Windows Update delivers. Vendor installer `.exe`s (Intel
-Graphics Software, AMD Adrenalin) additionally install services and tray apps
-that assume their GPU is present, and on a roaming image you end up carrying
-two vendors' broken background services.
-
-Nothing else about the image is machine-specific. Setup finished at build time
-and never runs again, the boot path comes from Ventoy, device encryption is
-off so nothing is bound to a TPM, and the controllers needed to boot are all
-inbox — `mshdc.inf` for AHCI, `stornvme.inf` for NVMe, `usbxhci.inf` and
-`uaspstor.inf` for the stick itself. **An AMD machine boots this image as
-happily as an Intel one.** Its chipset is better covered than Intel's:
-`amdgpio2.inf` and `amdi2c.inf` are inbox, so I²C touchpads work without help.
+Nothing else about the image is machine-specific: Setup never runs again, the
+boot path comes from Ventoy, device encryption is off, and the controllers
+needed to boot are all inbox (`mshdc.inf`, `stornvme.inf`, `usbxhci.inf`,
+`uaspstor.inf`). An AMD machine boots this image as happily as an Intel one —
+its chipset is better covered, since `amdgpio2.inf` and `amdi2c.inf` are inbox.
 Each new machine costs one "Setting up devices" pass on first boot there.
 
-The one thing that matters more than drivers here is that **hibernation is
-off**. Fast startup makes a "shut down" a kernel hibernate, and resuming that
-on the next machine brings back a kernel that believes it still has the
-previous machine's GPU, chipset and storage stack — a bugcheck at best, a
-corrupted volume at worst. `powercfg /h off` runs as a first-logon command
-during the build, which takes fast startup with it; `HiberbootEnabled=0` is
-set as well, so anything that later re-enables hibernation cannot bring fast
-startup back with it. Windows To Go disabled both for the same reason.
+What matters more than drivers is that **hibernation is off**. Fast startup
+makes a "shut down" a kernel hibernate, and resuming that on the next machine
+brings back a kernel that believes it still has the previous machine's GPU,
+chipset and storage stack — a bugcheck at best, a corrupted volume at worst.
+`HiberbootEnabled=0` is set alongside `powercfg /h off`, so anything that later
+re-enables hibernation cannot bring fast startup back with it.
 
-### BIOS updates, and the boot loop they cause
+## BIOS updates, and the boot loop they cause
 
-Windows Update offers vendor BIOS updates — HP's, Dell's, Lenovo's — as a
-driver in the **Firmware** device class. Installing one stages a UEFI capsule
-on the system partition and asks the firmware to flash it on the next boot.
-This image has no system partition: bootmgr and the BCD come from Ventoy's
-memdisk, and Windows sees the firmware boot device as a cdrom with an empty
-NT path. The flash can therefore never happen — and Windows does not give up.
-It retries on every boot, and the image is gone: *"Working on updates"*,
-*"Undoing changes made to your computer"*, restart, repeat, with no way in.
+Windows Update offers vendor BIOS updates as a driver in the **Firmware**
+device class. Installing one stages a UEFI capsule on the system partition,
+which this image does not have — so the flash can never happen, and Windows
+does not give up. It retries on every boot: *"Working on updates"*, *"Undoing
+changes made to your computer"*, restart, repeat, with no way in.
 
-So the build blocks that one class, as a first-logon command:
+The build blocks that one class, as a first-logon command:
 
 ```
 HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions
@@ -330,76 +222,70 @@ HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions
 ```
 
 That GUID is the Firmware setup class. The restriction is deliberately
-narrower than `ExcludeWUDriversInQualityUpdate`, which turns off driver
-updates altogether: the GPU and wifi drivers Windows Update finds on each new
-machine are what make this image usable on more than one, and they are a
-different class entirely. Only firmware is refused, and it is refused at
-installation, before anything is staged.
+narrower than `ExcludeWUDriversInQualityUpdate`, which turns off driver updates
+altogether: the GPU and Wi-Fi drivers Windows Update finds on each new machine
+are what make this image usable on more than one. Only firmware is refused, and
+it is refused at installation, before anything is staged.
 
 Flash the BIOS from the vendor's own boot media, or from the machine's own
 installed Windows. Never from this one.
 
 ### Recovering an image caught in the loop
 
-`make repair` takes an image that no longer boots because an update is stuck
-half-installed, and backs the update out.
-
 ```bash
 make repair                                  # the stick's /ventoy/win11.vhdx
 windows/repair.sh --vhdx out/win11.vhdx      # some other image, in place
 ```
 
-It boots **the image's own WinRE** against the image in QEMU — the same WinPE
-the build uses, for the same reason — and runs four things offline, on a volume
-nothing is running from:
-
-| Step | What it does |
-| --- | --- |
-| `dism /cleanup-image /revertpendingactions` | backs the half-installed servicing operation out |
-| `dism /remove-driver` | takes any Firmware-class package out of the driver store, so nothing re-stages it |
-| `reg add` into the offline `SOFTWARE` hive | writes the policy above, in force on the first boot after the repair |
-| `rd /s /q` | drops `SoftwareDistribution\Download` and any `\EFI\UpdateCapsule` staged on the image's ESP |
+This boots the image's own WinRE against it in QEMU and runs four things
+offline: `dism /cleanup-image /revertpendingactions` to back the half-installed
+operation out, `dism /remove-driver` to take the Firmware-class package out of
+the driver store, a `reg add` of the policy above into the offline `SOFTWARE`
+hive, and an `rd /s /q` of `SoftwareDistribution\Download` and any
+`\EFI\UpdateCapsule` staged on the ESP.
 
 The stick's image is copied to `out/rescue/` and repaired there, then copied
-back when you say so at the prompt (`--yes` to skip it, `--refresh` to take a
-fresh copy over one already in `out/rescue/`). An image that is already failing
-is not one to write to without a way back, and until that prompt is answered
-the stick holds exactly what it held. `--in-place` gives up the copy and
-repairs the stick's file directly; an image named with `--vhdx` is always
-repaired where it is.
+back when you say so at the prompt — an image that is already failing is not
+one to write to without a way back, and until that prompt is answered the stick
+holds exactly what it held. `--yes` skips the prompt, `--refresh` takes a fresh
+copy over one already in `out/rescue/`, and `--in-place` gives up the copy and
+repairs the stick's file directly.
 
 Putting one image back over another needs room for both at once, which a stick
 holding a grown VHDX rarely has, so `copy-to-stick.sh --replace` deletes the
 image already there first. It deletes nothing it did not write.
 
 DISM reports *"Revert of pending actions will be attempted after the reboot"* —
-the revert itself happens on the image's next boot, so expect one more
-*"Undoing changes"* pass on the machine. That one completes: the driver package
-it was trying to install is gone, and the policy will not let it come back.
+the revert happens on the image's next boot, so expect one more "Undoing
+changes" pass on the machine. That one completes: the driver package is gone,
+and the policy will not let it come back.
 
-### Verifying
+## Verifying
 
 The `deploy` phase *is* the test: an image that does not finish Setup never
 powers off, and the build fails with the guest's last screenshot and the
-`setupact.log` / `setuperr.log` it carved back out of the volume.
+`setupact.log` / `setuperr.log` it carved out of the volume.
 
 `make test-boot` additionally boots the **physical stick** in QEMU under OVMF,
-which exercises Ventoy's grub, the BCD patching and winload together. It runs
-QEMU with `-snapshot`, so every write lands in a throwaway overlay and the
-stick is never modified, and it unmounts the exFAT partition on the host first
-so the guest does not read a half-written filesystem. Booting the VHDX on its
-own would fail by design — it has no bootmgr that Ventoy has not supplied.
+exercising Ventoy's grub, the BCD patching and winload together. It runs with
+`-snapshot` so every write lands in a throwaway overlay, and unmounts the exFAT
+partition on the host first so the guest does not read a half-written
+filesystem. Booting the VHDX on its own would fail by design — it has no
+bootmgr that Ventoy has not supplied.
 
-### Space
+This is the one thing that needs anything on the host: `qemu-system-x86_64`,
+`edk2-ovmf` and `sudo`. It shows the VM over **VNC**, which is built into the
+qemu-system binary, because that VM runs under `sudo` and sudo strips
+`WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`, leaving a GTK window nothing to attach to.
+Set `DISPLAY_MODE=gtk` once `qemu-ui-gtk` is installed and you are on X11.
+
+## Space
 
 `out/` holds the ISO extraction (~8 GB, kept so a re-run skips it), the raw
 disk under construction (~15 GB), and the finished VHDX (~17 GB); peak is
-around 55–60 GB. `make clean` removes all of it.
-
-`make repair` wants room for one more copy of the stick's image, which is
-larger than the built one because a dynamic VHDX grows as Windows writes to
-it. That copy lives in `out/rescue/` and can be deleted once the repaired
-stick boots.
+55–60 GB. `make clean` removes all of it. `make repair` wants room for one more
+copy of the stick's image, which is larger than the built one because a dynamic
+VHDX grows as Windows writes to it.
 
 A dynamic VHDX only consumes what Windows has actually used, but Windows
 believes it has the full virtual size. **If the stick fills up before the VHDX
@@ -407,20 +293,8 @@ reaches that size, the filesystem inside it corrupts.**
 `windows/copy-to-stick.sh` warns when the virtual size exceeds free space on
 the stick.
 
-### Requirements
-
-**docker**, and **`/dev/kvm`** readable by you. Without KVM the build still
-works but Setup's out-of-box phase runs under emulation, which takes hours
-rather than minutes. No Windows machine is involved at any point.
-
-`make test-boot` is the one exception: it boots the physical stick, so it needs
-`qemu-system-x86_64`, `edk2-ovmf` and `sudo` on the host. It shows the VM over
-**VNC** and needs no QEMU UI package — Arch ships those separately
-(`qemu-ui-gtk` and friends) and VNC is built into the qemu-system binary. It is
-also the only thing that works unattended there, because that VM runs under
-`sudo` and sudo strips `WAYLAND_DISPLAY`/`XDG_RUNTIME_DIR`, leaving a GTK
-window nothing to attach to on a Wayland session. Set `DISPLAY_MODE=gtk` to
-override once `qemu-ui-gtk` is installed and you are on X11.
+Without KVM the build still works, but Setup's out-of-box phase runs under
+emulation and takes hours rather than minutes.
 
 ## Layout
 

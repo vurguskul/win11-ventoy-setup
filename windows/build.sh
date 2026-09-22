@@ -14,7 +14,7 @@ ROOT="$(cd "$HERE/.." && pwd)"
 # shellcheck source=../lib/common.sh
 source "$ROOT/lib/common.sh"
 
-IMAGE="${IMAGE:-boot-media-build}"
+IMAGE="${IMAGE:-win11-ventoy-build}"
 
 # Defaults live in the container script; anything set here - by win11.conf or
 # on the command line - is passed to it explicitly. Leaving a value unset and

@@ -23,7 +23,7 @@ ROOT="$(cd "$HERE/.." && pwd)"
 # shellcheck source=../lib/common.sh
 source "$ROOT/lib/common.sh"
 
-IMAGE="${IMAGE:-boot-media-build}"
+IMAGE="${IMAGE:-win11-ventoy-build}"
 ISO=""; EDITION=""; DEST_DIR="/ventoy"
 VHDX=""; VENTOY=""; IN_PLACE=0; REFRESH=0; YES=0
 RESCUE_DIR="$ROOT/out/rescue"

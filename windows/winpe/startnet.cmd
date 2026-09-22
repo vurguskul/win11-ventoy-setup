@@ -14,7 +14,7 @@ rem The log is copied to the ESP on the way out, where the build can read it
 rem back with mtools without mounting anything.
 
 set LOG=X:\winpe.log
-echo === boot-media winpe phase === > %LOG%
+echo === win11-ventoy-setup winpe phase === > %LOG%
 
 wpeinit >> %LOG% 2>&1
 

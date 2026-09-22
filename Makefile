@@ -1,4 +1,4 @@
-# boot-media - build bootable media for the Ventoy stick.
+# win11-ventoy-setup - build a Windows 11 VHDX for the Ventoy stick.
 #
 # Everything here is additive: no target formats or repartitions the stick.
 #
@@ -7,7 +7,7 @@
 # physical stick, which needs qemu and sudo on the host.
 
 SHELL := /bin/bash
-IMAGE := boot-media-build
+IMAGE := win11-ventoy-build
 
 .PHONY: help image list-editions vhdboot drivers build windows copy repair test-boot screenshot shell clean
 

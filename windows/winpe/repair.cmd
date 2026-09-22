@@ -26,7 +26,7 @@ rem The log goes to the payload disk, which is a plain FAT32 file on the host:
 rem that is how the repair reports what it did without mounting anything.
 
 set LOG=X:\repair.log
-echo === boot-media repair phase === > %LOG%
+echo === win11-ventoy-setup repair phase === > %LOG%
 
 wpeinit >> %LOG% 2>&1
 
