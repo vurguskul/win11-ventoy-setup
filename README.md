@@ -16,26 +16,80 @@ make windows                                       # build the VHDX into out/
 make install                                       # copy it onto the stick
 ```
 
-The build runs in a container, so the host needs only **docker** and
-**`/dev/kvm`** — no wimlib, no ntfs-3g, no qemu, no root, and no Windows
-machine. It prompts for the local account name and password and is otherwise
-unattended. Budget 30–60 minutes and ~60 GB free in `out/`.
+The build prompts for the local account name and password and is otherwise
+unattended. Budget 30–60 minutes.
 
-The two halves are kept apart on purpose. `make windows` writes only to `out/`,
-so the stick need not even be plugged in while an hour-long build runs, and a
-build that fails cannot have touched it. `make install` only reads
+## Contents
+
+- [Prerequisites](#prerequisites)
+- [Make targets](#make-targets)
+- [How it boots](#how-it-boots)
+- [Why Setup runs at build time](#why-setup-runs-at-build-time)
+- [Why nothing needs root](#why-nothing-needs-root)
+- [The local account](#the-local-account)
+- [Drivers](#drivers)
+- [Moving between machines](#moving-between-machines)
+- [BIOS updates, and the boot loop they cause](#bios-updates-and-the-boot-loop-they-cause)
+  - [Recovering an image caught in the loop](#recovering-an-image-caught-in-the-loop)
+- [Verifying](#verifying)
+- [Space](#space)
+- [Layout](#layout)
+
+## Prerequisites
+
+The build runs in a container, so the host needs **docker** and little else —
+no wimlib, no ntfs-3g, no qemu, no root, and no Windows machine.
+
+| Requirement | Notes |
+| --- | --- |
+| **docker** | The only hard host dependency. `make windows` builds the image from `docker/Dockerfile` on first use. |
+| **`/dev/kvm`**, readable and writable by you | Not strictly required — qemu falls back to emulation — but the build's two guest boots then take hours instead of minutes. On Arch, add yourself to the `kvm` group. |
+| **A Windows 11 ISO** with `sources/install.wim` | Native VHD boot is a Pro/Enterprise/Education feature; Home is not licensed for it. |
+| **~60 GB free in `out/`** | The ISO extraction, the raw disk and the finished VHDX coexist at peak; see [Space](#space). |
+| **A Ventoy stick**, already installed and mounted | Only for the targets that touch it. Its exFAT partition is found by its `Ventoy` label; nothing here installs, formats or repartitions Ventoy. |
+| `pv` (optional) | Draws a progress bar with an ETA for the copy to the stick; `dd` prints bytes and rate without it. |
+| `qemu-system-x86_64`, `edk2-ovmf`, `sudo` (optional) | Needed by `make test-boot` alone — the one target that runs anything outside the container. |
+
+Then copy the sample config and set the ISO path, the edition and the virtual
+size:
+
+```bash
+cp windows/win11.conf.example windows/win11.conf
+```
+
+Every value in it can also be given to `windows/build.sh` on the command line,
+where it wins over the file: `--iso`, `--edition`, `--size`, `--block-size`,
+`--drivers`, `--user`, `--computer`, `--locale`, `--input-locale`,
+`--timezone`.
+
+## Make targets
+
+| Target | What it does |
+| --- | --- |
+| `make help` | List the targets. |
+| `make list-editions` | Print the editions inside the configured ISO, with the name to put in `EDITION`. |
+| `make vhdboot` | Fetch `ventoy_vhdboot.img` from the vhdiso release and install it on the stick. A no-op once it is there. |
+| `make drivers` | Fetch the driver packages named in `windows/drivers.txt` into `windows/drivers/`. Already-fetched packages are left alone. |
+| `make windows` | Build the VHDX into `out/win11.vhdx`. Runs `drivers` first. The stick is not touched. |
+| `make install` | Copy `out/win11.vhdx` to the stick. Runs `vhdboot` first. |
+| `make repair` | Recover the stick's image after a failed update; see [Recovering an image caught in the loop](#recovering-an-image-caught-in-the-loop). |
+| `make test-boot` | Boot the physical stick in QEMU under OVMF, read-only; see [Verifying](#verifying). |
+| `make screenshot` | Grab the framebuffer of a running `make test-boot` over QMP into `/tmp/win11-ventoy-screen.png`. |
+| `make image` | Rebuild the build container. `make windows` builds it on first use, so this is for changes to `docker/Dockerfile`. |
+| `make shell` | Open a shell in the build container, with `out/` at `/work` and the repo at `/repo`. |
+| `make clean` | Empty `out/`. |
+
+The build and the install are kept apart on purpose. `make windows` writes only
+to `out/`, so the stick need not even be plugged in while an hour-long build
+runs, and a build that fails cannot have touched it. `make install` only reads
 `out/win11.vhdx` and writes it to the stick, so putting the image on a second
 stick — or on the one that was somewhere else at build time — costs a file copy
-rather than another build. It installs `ventoy_vhdboot.img` first if the stick
-does not have it yet.
+rather than another build.
 
 The copy reports progress: 17 GB over USB is the longest step on the host, and
-a silent one is indistinguishable from a hang. `pv` draws a bar with an ETA if
-it is installed, `dd` prints bytes and rate otherwise. The `sync` afterwards
-can take minutes of its own — the kernel acknowledges the write long before the
-stick has it — so it is announced rather than left to look like a stall.
-
-`make help` lists the rest of the targets.
+a silent one is indistinguishable from a hang. The `sync` afterwards can take
+minutes of its own — the kernel acknowledges the write long before the stick
+has it — so it is announced rather than left to look like a stall.
 
 ## How it boots
 
@@ -316,9 +370,6 @@ believes it has the full virtual size. **If the stick fills up before the VHDX
 reaches that size, the filesystem inside it corrupts.**
 `windows/copy-to-stick.sh` warns when the virtual size exceeds free space on
 the stick.
-
-Without KVM the build still works, but Setup's out-of-box phase runs under
-emulation and takes hours rather than minutes.
 
 ## Layout
 
