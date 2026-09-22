@@ -308,6 +308,68 @@ during the build, which takes fast startup with it; `HiberbootEnabled=0` is
 set as well, so anything that later re-enables hibernation cannot bring fast
 startup back with it. Windows To Go disabled both for the same reason.
 
+### BIOS updates, and the boot loop they cause
+
+Windows Update offers vendor BIOS updates — HP's, Dell's, Lenovo's — as a
+driver in the **Firmware** device class. Installing one stages a UEFI capsule
+on the system partition and asks the firmware to flash it on the next boot.
+This image has no system partition: bootmgr and the BCD come from Ventoy's
+memdisk, and Windows sees the firmware boot device as a cdrom with an empty
+NT path. The flash can therefore never happen — and Windows does not give up.
+It retries on every boot, and the image is gone: *"Working on updates"*,
+*"Undoing changes made to your computer"*, restart, repeat, with no way in.
+
+So the build blocks that one class, as a first-logon command:
+
+```
+HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions
+    DenyDeviceClasses            = 1
+    DenyDeviceClassesRetroactive = 1
+    DenyDeviceClasses\1          = {f2e7dd72-6468-4e36-b6f1-6488f42c1b52}
+```
+
+That GUID is the Firmware setup class. The restriction is deliberately
+narrower than `ExcludeWUDriversInQualityUpdate`, which turns off driver
+updates altogether: the GPU and wifi drivers Windows Update finds on each new
+machine are what make this image usable on more than one, and they are a
+different class entirely. Only firmware is refused, and it is refused at
+installation, before anything is staged.
+
+Flash the BIOS from the vendor's own boot media, or from the machine's own
+installed Windows. Never from this one.
+
+### Recovering an image that is already looping
+
+`make repair` — for an image built before the policy above, or one that got
+there some other way.
+
+```bash
+make repair                        # the stick's /ventoy/win11.vhdx
+windows/repair.sh --vhdx out/win11.vhdx --in-place
+```
+
+It copies the image off the stick, boots **the image's own WinRE** against the
+copy in QEMU, and runs four things offline, on a volume nothing is running
+from:
+
+| | |
+|---|---|
+| `dism /cleanup-image /revertpendingactions` | backs the half-installed servicing operation out |
+| `dism /remove-driver` | takes any Firmware-class package out of the driver store, so nothing re-stages it |
+| `reg add` into the offline `SOFTWARE` hive | writes the policy above, in force on the first boot after the repair |
+| `rd /s /q` | drops `SoftwareDistribution\Download` and any `\EFI\UpdateCapsule` staged on the image's ESP |
+
+The copy is the point. The repair writes to the image, and an image that is
+already failing is not one to experiment on without a way back: the stick keeps
+what it had until you answer the prompt at the end, and `out/rescue/` keeps the
+repaired image after you do. `--in-place` skips the copy, which is right for a
+local build and wrong for the only copy you have.
+
+DISM reports *"Revert of pending actions will be attempted after the reboot"* —
+the revert itself happens on the image's next boot, so expect one more
+*"Undoing changes"* pass on the machine. That one completes: the driver package
+it was trying to install is gone, and the policy will not let it come back.
+
 ### Verifying
 
 The `deploy` phase *is* the test: an image that does not finish Setup never
@@ -326,6 +388,11 @@ own would fail by design — it has no bootmgr that Ventoy has not supplied.
 `out/` holds the ISO extraction (~8 GB, kept so a re-run skips it), the raw
 disk under construction (~15 GB), and the finished VHDX (~17 GB); peak is
 around 55–60 GB. `make clean` removes all of it.
+
+`make repair` wants room for one more copy of the image as it stands on the
+stick — which is larger than the built one, because a dynamic VHDX grows as
+Windows writes to it. It lands in `out/rescue/` and can be deleted once the
+repaired stick boots.
 
 A dynamic VHDX only consumes what Windows has actually used, but Windows
 believes it has the full virtual size. **If the stick fills up before the VHDX
@@ -353,6 +420,7 @@ override once `qemu-ui-gtk` is installed and you are on X11.
 ```
 docker/Dockerfile              the build environment; nothing else is installed
 lib/common.sh                  shared helpers
+lib/winpe.sh                   building and booting WinPE: shared by build and repair
 ventoy/fetch-vhdboot.sh        install ventoy_vhdboot.img on the stick
 windows/build.sh               host side: inputs, password, docker run
 windows/build-vhdx.sh          the pipeline, inside the container
@@ -360,6 +428,9 @@ windows/drivers.txt            driver packages to fetch, by hardware ID
 windows/fetch-drivers.sh       host side of the fetch: docker run
 windows/fetch-drivers.py       the fetch, inside the container
 windows/winpe/startnet.cmd     what WinPE runs instead of Setup: bcdboot, dism
+windows/repair.sh              host side of the repair: copy off the stick, docker run
+windows/repair-vhdx.sh         the repair, inside the container
+windows/winpe/repair.cmd       what WinRE runs to back a failed update out
 windows/drivers/               vendor INF packages to inject (gitignored)
 windows/copy-to-stick.sh       host side: copy the finished VHDX to the stick
 windows/test-boot.sh           boot the stick in QEMU, read-only

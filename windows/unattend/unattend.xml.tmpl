@@ -108,6 +108,26 @@
           <Description>Disable hibernation and fast startup</Description>
           <CommandLine>cmd /c powercfg /h off &amp; reg add "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power" /v HiberbootEnabled /t REG_DWORD /d 0 /f</CommandLine>
         </SynchronousCommand>
+        <!-- Vendor BIOS updates arrive from Windows Update as a driver in
+             the Firmware device class: installing one stages a UEFI capsule
+             on the system partition and asks the firmware to flash it on the
+             next boot. This image has no system partition - Ventoy boots it
+             from a BCD in a memdisk - so the flash can never happen, and
+             Windows retries the update on every boot: "Undoing changes made
+             to your computer", restart, repeat, with no way in. Denying the
+             Firmware setup class stops that at the point of installation.
+             Retroactive covers a firmware device that is somehow already
+             there. This is deliberately narrower than turning driver updates
+             off: the GPU and wifi drivers Windows Update finds on each new
+             machine are the reason this image is usable on more than one, and
+             they are a different class entirely. An image already stuck in
+             the loop is recovered with windows/repair.sh, which writes this
+             same policy offline. -->
+        <SynchronousCommand wcm:action="add">
+          <Order>4</Order>
+          <Description>Block firmware (BIOS) updates from Windows Update</Description>
+          <CommandLine>cmd /c reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions" /v DenyDeviceClasses /t REG_DWORD /d 1 /f &amp; reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions" /v DenyDeviceClassesRetroactive /t REG_DWORD /d 1 /f &amp; reg add "HKLM\SOFTWARE\Policies\Microsoft\Windows\DeviceInstall\Restrictions\DenyDeviceClasses" /v 1 /t REG_SZ /d "{f2e7dd72-6468-4e36-b6f1-6488f42c1b52}" /f</CommandLine>
+        </SynchronousCommand>
         <!-- OOBE runs during the build, inside QEMU, so the image has to put
              itself away when it is done: the build waits for the guest to
              power off and treats that as the success signal. First-logon
@@ -118,12 +138,12 @@
              Doing it explicitly means the shipped image cannot be carrying a
              plaintext DefaultPassword even if it does not. -->
         <SynchronousCommand wcm:action="add">
-          <Order>4</Order>
+          <Order>5</Order>
           <Description>Clear the one-time auto-logon credentials</Description>
           <CommandLine>cmd /c reg add "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v AutoAdminLogon /t REG_SZ /d 0 /f &amp; reg delete "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" /v DefaultPassword /f</CommandLine>
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
-          <Order>5</Order>
+          <Order>6</Order>
           <Description>Power off; the build is finished with this image</Description>
           <CommandLine>shutdown /s /t 0</CommandLine>
         </SynchronousCommand>

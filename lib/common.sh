@@ -14,6 +14,10 @@ need() {
        host; on the host you need only docker."
 }
 
+# Case-insensitive lookup: an ISO's UDF names are not reliably lower case, and
+# 7z reproduces whatever case it finds.
+find_ci() { find "$1" -ipath "$1/$2" -print -quit 2>/dev/null; }
+
 # Free bytes on the filesystem holding $1.
 free_bytes() { df -B1 --output=avail "$1" | tail -1 | tr -d ' '; }
 

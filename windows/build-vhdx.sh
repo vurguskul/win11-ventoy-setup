@@ -42,6 +42,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 # shellcheck source=../lib/common.sh
 source "$ROOT/lib/common.sh"
+# Booting WinPE, and everything that goes into the disk it boots from, is
+# shared with windows/repair-vhdx.sh.
+# shellcheck source=../lib/winpe.sh
+source "$ROOT/lib/winpe.sh"
 
 # --- config -------------------------------------------------------------------
 
@@ -112,58 +116,12 @@ DISK="$WORK/disk.raw"      # the assembled disk, built and booted here
 ESP_IMG="$WORK/esp.img"
 NTFS_IMG="$WORK/ntfs.img"
 
-# Case-insensitive lookup: the ISO's UDF names are not reliably lower case, and
-# 7z reproduces whatever case it finds.
-find_ci() { find "$1" -ipath "$1/$2" -print -quit 2>/dev/null; }
-
-# dd rather than a loop device: partitions are built as separate files and
-# written into the disk at their own offsets, which needs nothing privileged.
-place() {   # place <image file> <start LBA> <disk file>
-  local src=$1 off=$(( $2 * 512 )) dst=$3
-  (( off % 1048576 == 0 )) || die "partition at LBA $2 is not MiB-aligned; dd seek would be wrong"
-  dd if="$src" of="$dst" bs=1M seek=$(( off / 1048576 )) conv=notrunc,sparse status=none
-  info "$(basename "$src") -> $(basename "$dst") +$(( off / 1048576 )) MiB"
-}
-
-# First and last sector of a partition, read back from the table rather than
-# recomputed - the two must not be able to disagree.
-part_first() { sgdisk -i "$1" "$2" | awk '/^First sector:/ { print $3; exit }'; }
-part_last()  { sgdisk -i "$1" "$2" | awk '/^Last sector:/  { print $3; exit }'; }
-
 stage_done() { [[ -n $STOP_AFTER && $STOP_AFTER == "$1" ]] && { log "--stop-after $1: stopping"; exit 0; }; return 0; }
 
 # --- extract ------------------------------------------------------------------
-#
-# 7z rather than a loop mount, which would need privileges the container does
-# not have - and rather than libarchive, which cannot read this ISO at all:
-# install.wim is 7.6 GB, so it exists only in the UDF filesystem, outside
-# ISO9660's 4 GB limit. bsdtar sees two entries; 7z sees the real tree.
-# Cached in the work directory: this pulls ~8 GB out of the ISO, and a re-run
-# or a later --list-editions wants the same files. Only what is actually
-# missing is extracted, and it is staged in .part first so an interrupted 7z
-# cannot leave a truncated install.wim behind looking like a good one.
-WANT=()
-[[ -n $(find_ci "$SRC" 'sources/install.wim') ]] || WANT+=("sources/install.wim")
-if ! (( LIST_ONLY )); then
-  [[ -n $(find_ci "$SRC" 'efi/microsoft/boot/efisys.bin') ]] || WANT+=("efi" "boot")
-fi
 
-log "Extracting boot files and WIMs from $(basename "$ISO")"
-if (( ${#WANT[@]} )); then
-  info "extracting ${WANT[*]} - this takes a few minutes"
-  rm -rf "$SRC.part"; mkdir -p "$SRC.part" "$SRC"
-  7z x -y -bso0 -bsp0 -o"$SRC.part" "$ISO" "${WANT[@]}" >/dev/null ||
-    die "7z could not read $ISO"
-  # Hardlink rather than copy or move: instant, no second copy of 7.5 GB, and
-  # it merges into whatever a previous run already extracted.
-  cp -rlf "$SRC.part"/. "$SRC"/
-  rm -rf "$SRC.part"
-else
-  info "using the cached extraction in $SRC"
-fi
-WIM="$(find_ci "$SRC" 'sources/install.wim')"
-[[ -n $WIM ]] || die "no sources/install.wim in the ISO (an install.esd needs converting first)"
-info "install.wim  $(human "$(stat -c%s "$WIM")")"
+# --list-editions needs install.wim and nothing else.
+WIM=$(iso_extract "$ISO" "$SRC" $(( ! LIST_ONLY )))
 
 if (( LIST_ONLY )); then
   log "Editions in this ISO"
@@ -288,74 +246,8 @@ fi
 
 # --- QEMU helpers -------------------------------------------------------------
 
-if [[ -c /dev/kvm && -w /dev/kvm ]]; then
-  ACCEL=(-machine q35,accel=kvm -cpu host)
-else
-  warn "/dev/kvm is not available - falling back to emulation, which is far slower"
-  warn "pass --device /dev/kvm to docker run"
-  ACCEL=(-machine q35 -cpu max)
-fi
-
-cat > "$WORK/qmp.py" <<'PYEOF'
-import json, socket, sys
-port, out = int(sys.argv[1]), sys.argv[2]
-try:
-    sock = socket.create_connection(("127.0.0.1", port), timeout=10)
-except OSError as e:
-    sys.exit(f"cannot reach QMP: {e}")
-f = sock.makefile("rwb"); f.readline()
-def cmd(o):
-    f.write((json.dumps(o) + "\n").encode()); f.flush()
-    while True:
-        line = f.readline()
-        if not line: sys.exit("QMP closed")
-        m = json.loads(line)
-        if "return" in m or "error" in m: return m
-cmd({"execute": "qmp_capabilities"})
-r = cmd({"execute": "screendump", "arguments": {"filename": out, "format": "png"}})
-if "error" in r: sys.exit(r["error"].get("desc", "screendump failed"))
-PYEOF
-
-QMP_PORT="${QMP_PORT:-4444}"
-
-# Run QEMU in the background and wait for the guest to power itself off. Both
-# phases end that way - WinPE with wpeutil shutdown, the deploy phase with the
-# last first-logon command - so a clean exit is the success signal, and a
-# timeout is a hang. Screenshots go to the work directory every minute, which
-# is the only way to see what a -display none guest is stuck on.
-run_qemu() {   # run_qemu <label> <timeout seconds> <qemu args...>
-  local label=$1 timeout=$2; shift 2
-  local vars="$WORK/ovmf-vars-$label.fd"
-  cp "$OVMF_VARS" "$vars"
-  # Old screenshots from a previous run of the same phase are worse than none:
-  # they look exactly like current ones while showing a failure already fixed.
-  rm -f "$WORK/$label"-[0-9]*.png "$WORK/$label-timeout.png"
-
-  qemu-system-x86_64 "${ACCEL[@]}" \
-    -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
-    -drive if=pflash,format=raw,file="$vars" \
-    -net none -display none \
-    -qmp "tcp:127.0.0.1:$QMP_PORT,server,nowait" \
-    "$@" &
-  local pid=$! waited=0
-  info "qemu pid $pid, ${timeout}s budget"
-
-  while kill -0 "$pid" 2>/dev/null; do
-    if (( waited >= timeout )); then
-      python3 "$WORK/qmp.py" "$QMP_PORT" "$WORK/$label-timeout.png" 2>/dev/null || true
-      kill "$pid" 2>/dev/null || true
-      die "$label phase did not finish within ${timeout}s
-       last screen: $WORK/$label-timeout.png"
-    fi
-    sleep 10; waited=$(( waited + 10 ))
-    if (( waited % 60 == 0 )); then
-      python3 "$WORK/qmp.py" "$QMP_PORT" "$WORK/$label-$(printf '%04d' "$waited").png" 2>/dev/null || true
-      info "  $label: ${waited}s elapsed"
-    fi
-  done
-  wait "$pid" 2>/dev/null || true
-  info "$label phase finished after ${waited}s"
-}
+qemu_accel
+qmp_script
 
 # mtools reads the ESP straight out of the assembled disk at its offset, so the
 # build can check what the guest wrote there without mounting anything.
@@ -368,91 +260,12 @@ export MTOOLSRC="$WORK/mtoolsrc"
 # --- winpe: give the image a BCD ----------------------------------------------
 #
 # Windows cannot boot natively from an empty ESP, and bcdboot does not exist on
-# Linux. Rather than author a BCD by hand with hivex, the build boots the ISO's
-# own WinPE and lets Microsoft's tool write it. WinPE comes up from a CD, so
-# the image under construction is unambiguously disk 0.
-# A FAT32 disk image rather than an ISO. OVMF has no ISO9660 driver - it reads
-# UDF and FAT only - so a plain xorriso ISO gives its boot option nothing to
-# mount ("failed to start ... : No mapping"), and this xorriso cannot write UDF.
-# A bare FAT32 volume is the one thing the firmware is certain to read, and it
-# is what a bootable Windows USB stick is anyway.
+# Linux. Rather than author a BCD by hand with hivex, the build boots the
+# image's own WinPE and lets Microsoft's tool write it. WinPE comes up from a
+# disk of its own, so the image under construction is unambiguously disk 0.
 log "Building the WinPE boot disk"
 PE_IMG="$WORK/winpe.img"
-PE_BOOTWIM="$WORK/pe-boot.wim"
-
-# The WinPE is the image's own recovery environment, not the ISO's boot.wim.
-# boot.wim's WinPE cannot service an offline image at all: DISM starts
-# dismhost.exe, never gets its COM object back, and every /Image: command ends
-# at
-#
-#   DismHostLib: Failed to create DismHostManager remote object (hr:0x80004002)
-#   DISM.EXE: Could not load the image session. HRESULT=80004002
-#
-# which is "No such interface supported" on the console. It is the WinPE that
-# is broken and not the image being serviced: "dism /image:X:\", pointed at
-# WinPE's own RAM disk, fails the same way, as does every variation of scratch
-# directory, and the two WIMs ship byte-identical DISM binaries on the same
-# servicing stack. Winre.wim's DISM works. It is a WinPE like any other -
-# startnet.cmd runs once winpeshl.ini is gone, and bcdboot, diskpart and
-# wpeutil are all there - and it comes out of the image being built, so the
-# tool doing the servicing always matches what it is servicing.
-PE_SRC="$SRC/winre.wim"
-if [[ ! -s $PE_SRC ]]; then
-  info "extracting Winre.wim from the image"
-  rm -f "$SRC/Winre.wim"
-  wimextract "$WIM" "$INDEX" /Windows/System32/Recovery/Winre.wim \
-    --dest-dir="$SRC" --no-acls >/dev/null 2>&1 ||
-    die "no \\Windows\\System32\\Recovery\\Winre.wim in this edition - the winpe
-       phase has no WinPE to boot"
-  mv "$SRC/Winre.wim" "$PE_SRC"
-fi
-info "winre.wim    $(human "$(stat -c%s "$PE_SRC")")"
-cp "$PE_SRC" "$PE_BOOTWIM"
-
-PE_IMAGES=$(wiminfo "$PE_BOOTWIM" | awk '/^Image Count:/ { print $NF }')
-# winpeshl.ini is what launches the recovery shell instead of startnet.cmd, so
-# it goes; startnet.cmd already exists, so it is removed before being added
-# rather than added over.
-for i in $(seq 1 "${PE_IMAGES:-1}"); do
-  wimupdate "$PE_BOOTWIM" "$i" >/dev/null <<CMDS
-delete --force /Windows/System32/winpeshl.ini
-delete --force /Windows/System32/startnet.cmd
-add "$ROOT/windows/winpe/startnet.cmd" "/Windows/System32/startnet.cmd"
-CMDS
-done
-wiminfo "$PE_BOOTWIM" 1 --boot >/dev/null
-info "patched $PE_IMAGES WinPE image(s); booting image 1 (WinRE)"
-
-# A GPT disk with one EFI System Partition, not a bare FAT volume: OVMF found
-# no boot option at all on a partitionless FAT disk. PartitionDxe -> ESP ->
-# FatDxe -> \EFI\BOOT\BOOTX64.EFI is the path the firmware is built around.
-PE_PART="$WORK/winpe-part.img"
-rm -f "$PE_IMG" "$PE_PART"
-truncate -s $(( $(stat -c%s "$PE_BOOTWIM") / 1048576 + 320 ))M "$PE_IMG"
-sgdisk -o -n 1:2048:0 -t 1:ef00 -c 1:WINPE "$PE_IMG" >/dev/null
-PE_START=$(part_first 1 "$PE_IMG")
-PE_SECTORS=$(( $(part_last 1 "$PE_IMG") - PE_START + 1 ))
-truncate -s $(( PE_SECTORS * 512 )) "$PE_PART"
-mkfs.vfat -F 32 -n WINPE "$PE_PART" >/dev/null
-
-for d in efi boot; do
-  src="$(find_ci "$SRC" "$d")"
-  [[ -n $src ]] && mcopy -s -i "$PE_PART" "$src" ::/
-done
-mmd -i "$PE_PART" ::/sources >/dev/null 2>&1 || true
-mcopy -i "$PE_PART" "$PE_BOOTWIM" ::/sources/boot.wim
-rm -f "$PE_BOOTWIM"
-
-# The ISO's own \EFI\BOOT\BOOTX64.EFI is cdboot.efi, which prints
-# "Press any key to boot from CD or DVD......" and gives up when nobody does.
-# bootmgfw.efi is the same boot manager without the prompt; the WIM has one.
-wimextract "$WIM" "$INDEX" /Windows/Boot/EFI/bootmgfw.efi --dest-dir="$WORK" >/dev/null
-mcopy -o -i "$PE_PART" "$WORK/bootmgfw.efi" ::/EFI/BOOT/BOOTX64.EFI
-rm -f "$WORK/bootmgfw.efi"
-
-place "$PE_PART" "$PE_START" "$PE_IMG"
-rm -f "$PE_PART"
-info "$PE_IMG  $(human "$(stat -c%s "$PE_IMG")")"
+winpe_build_disk "$PE_IMG" "$WIM" "$INDEX" "$SRC" "$ROOT/windows/winpe/startnet.cmd"
 
 # --- drivers ------------------------------------------------------------------
 #

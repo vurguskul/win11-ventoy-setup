@@ -9,7 +9,7 @@
 SHELL := /bin/bash
 IMAGE := boot-media-build
 
-.PHONY: help image list-editions vhdboot drivers build windows copy test-boot screenshot shell clean
+.PHONY: help image list-editions vhdboot drivers build windows copy repair test-boot screenshot shell clean
 
 help:
 	@echo "make list-editions   list the Windows editions in the ISO"
@@ -18,6 +18,7 @@ help:
 	@echo "make windows         build the Win11 VHDX and copy it to the stick"
 	@echo "make build           build the VHDX only, leave the stick alone"
 	@echo "make copy            copy an already-built VHDX to the stick"
+	@echo "make repair          recover the stick's image after a failed update"
 	@echo "make image           (re)build the build container"
 	@echo "make shell           open a shell in the build container"
 	@echo "make test-boot       boot the stick in QEMU to verify (read-only)"
@@ -46,6 +47,13 @@ windows: vhdboot drivers build copy
 
 copy:
 	@windows/copy-to-stick.sh
+
+# For an image that no longer boots because Windows Update left an update half
+# installed - a vendor BIOS update is the one that does this here. Copies the
+# image off the stick, boots its own WinRE against the copy to back the update
+# out, and offers to put it back.
+repair:
+	@windows/repair.sh
 
 test-boot:
 	@windows/test-boot.sh
