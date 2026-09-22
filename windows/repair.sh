@@ -38,6 +38,7 @@ usage: repair.sh [options]
   --ventoy MP    Ventoy mountpoint, if it cannot be found automatically
   --dest DIR     directory on the stick holding the image (default /ventoy)
   --iso PATH     Windows ISO to take the WinPE from (default: win11.conf)
+  --edition NAME edition to take the WinPE from (default: win11.conf)
   --in-place     repair the file where it is, with no copy and no way back
   --refresh      re-copy from the stick even if out/rescue/ already has a copy
   --yes          do not ask before copying the repaired image back

@@ -96,10 +96,10 @@ IBSLIB BFSVC: Failed to get partition name. Status = 0xc0000452   <- MungeBootEn
 `0xc0000452` is `STATUS_SYSTEM_DEVICE_NOT_FOUND`, and the emphasis belongs on
 *system device*: Windows resolves the system partition from the device the
 **firmware** booted from, not by scanning the OS disk for a partition carrying
-the ESP type GUID. Three things follow, each of which was tried:
+the ESP type GUID. Three things follow:
 
-- **Giving the image an ESP does not help.** The failing image's ESP came back
-  empty, still carrying an untouched `mkfs.fat` signature.
+- **Giving the image an ESP does not help.** Setup leaves it untouched — the
+  volume still carries its `mkfs.fat` signature afterwards.
 - **Deleting `Microsoft-Windows-Sysprep-SpBcd` from `Specialize.xml` only moves
   the failure.** `specialize` then completes, and Setup dies one stage later in
   `CallBack_MungeBootEntries` with *"Windows could not update the computer's
@@ -131,12 +131,13 @@ is ordinary:
    then reaches the ESP with diskpart's `select volume` — which selects that
    volume's disk too, so nothing depends on which disk number the image
    happens to get.
-2. **`deploy`** — the image now boots natively. `specialize` succeeds, BFSVC
-   writes boot entries into a real ESP, OOBE processes `unattend.xml`, and the
-   last first-logon command powers the machine off. The build treats that
-   power-off as the success signal — it only runs if OOBE got that far — then
-   carves the NTFS volume back out and checks that `C:\Users\<you>` exists and
-   that `setupact.log` reached `IMAGE_STATE_COMPLETE`.
+2. **`deploy`** — the image boots natively from that BCD. `specialize`
+   succeeds, BFSVC writes boot entries into a real ESP, OOBE processes
+   `unattend.xml`, and the last first-logon command powers the machine off.
+   The build treats that power-off as the success signal — it only runs if
+   OOBE got that far — then carves the NTFS volume back out and checks that
+   `C:\Users\<you>` exists and that `setupact.log` reached
+   `IMAGE_STATE_COMPLETE`.
 
 Screenshots of both guests land in `out/` every minute, which is the only way
 to see what a `-display none` VM is stuck on.
@@ -148,11 +149,10 @@ it; the image's own ESP goes unused at runtime.
 
 ### The container, and why nothing needs root
 
-The previous build worked through kernel block devices: `qemu-nbd` to attach
-the image, `mount` to write into it, `sudo` for both, and a retry loop around
-the nbd module's startup races. None of that survives. Every filesystem is
-created and populated as a plain file, which is what makes the container
-unprivileged — it runs as your own uid.
+No step touches a kernel block device. Every filesystem is created and
+populated as a plain file, which is what keeps the container unprivileged — it
+runs as your own uid, with no `qemu-nbd` to attach, no `mount`, no `sudo`, and
+no retry loop around the nbd module's startup races.
 
 | Step | How |
 | --- | --- |
@@ -191,13 +191,14 @@ without it the build's own shutdown never fires and the deploy phase waits
 until it times out. It is spent during the build; the machine you boot from the
 stick comes up at the login screen like any other.
 
-Five first-logon commands run, once, during the build:
+Six first-logon commands run, once, during the build:
 
 | Command | Why |
 | --- | --- |
 | `diskpart` SAN policy `OfflineAll` | stops Windows mounting and writing to the internal disks of whatever host it is booted on |
 | `PreventDeviceEncryption=1` | device encryption would bind the install to one machine's TPM and make it unbootable on the next |
 | `powercfg /h off`, `HiberbootEnabled=0` | fast startup makes a "shut down" a kernel hibernate, and resuming that on a different machine bugchecks or corrupts the volume; see [Moving the stick between machines](#moving-the-stick-between-machines) |
+| `DenyDeviceClasses` for the Firmware class | a BIOS update from Windows Update cannot complete on this image and leaves it in a reboot loop; see [BIOS updates](#bios-updates-and-the-boot-loop-they-cause) |
 | clear `AutoAdminLogon` / `DefaultPassword` | Windows is meant to drop these once `LogonCount` runs out; doing it explicitly means the shipped image cannot be carrying a plaintext password even if it does not |
 | `shutdown /s /t 0` | OOBE runs inside QEMU, so the image puts itself away when it is done; the build waits for that power-off |
 
@@ -239,13 +240,13 @@ injected just the same — `windows/drivers/README.md` covers that.
 The shipped list is 11 packages, ~60 MB downloaded, ~190 MB in the driver
 store, carrying ~128 device IDs: Intel AX201–AX411 and BE200, MediaTek
 MT7921/7922/7925, Qualcomm WCN685x, Realtek RTL8852AE/BE, Realtek and Intel
-Ethernet, and an RTL8153 USB dongle as a last resort. What each package
-actually covers was read back out of its INFs rather than taken from the
-vendor's description — the MT7922 package does not cover MT7921, and the
-RTL8852BE one does not cover RTL8852AE. What is already inbox was checked
-against this ISO and left out: Intel AX200/AX210, Realtek RTL8821CE/8822CE,
-Qualcomm QCA6174, Intel I219/I225, ASIX USB Ethernet, and RNDIS — so a phone
-on a USB cable is the escape hatch when nothing else matches.
+Ethernet, and an RTL8153 USB dongle as a last resort. Coverage comes from each
+package's INFs rather than from the vendor's description — the MT7922 package
+does not cover MT7921, and the RTL8852BE one does not cover RTL8852AE. What
+this ISO already has inbox stays out of the list: Intel AX200/AX210, Realtek
+RTL8821CE/8822CE, Qualcomm QCA6174, Intel I219/I225, ASIX USB Ethernet, and
+RNDIS — so a phone on a USB cable is the escape hatch when nothing else
+matches.
 
 Each package is fetched once into `windows/drivers/<name>/` and then left
 alone, so the drivers an image was built with do not change underneath you
@@ -338,32 +339,38 @@ installation, before anything is staged.
 Flash the BIOS from the vendor's own boot media, or from the machine's own
 installed Windows. Never from this one.
 
-### Recovering an image that is already looping
+### Recovering an image caught in the loop
 
-`make repair` — for an image built before the policy above, or one that got
-there some other way.
+`make repair` takes an image that no longer boots because an update is stuck
+half-installed, and backs the update out.
 
 ```bash
-make repair                        # the stick's /ventoy/win11.vhdx
-windows/repair.sh --vhdx out/win11.vhdx --in-place
+make repair                                  # the stick's /ventoy/win11.vhdx
+windows/repair.sh --vhdx out/win11.vhdx      # some other image, in place
 ```
 
-It copies the image off the stick, boots **the image's own WinRE** against the
-copy in QEMU, and runs four things offline, on a volume nothing is running
-from:
+It boots **the image's own WinRE** against the image in QEMU — the same WinPE
+the build uses, for the same reason — and runs four things offline, on a volume
+nothing is running from:
 
-| | |
-|---|---|
+| Step | What it does |
+| --- | --- |
 | `dism /cleanup-image /revertpendingactions` | backs the half-installed servicing operation out |
 | `dism /remove-driver` | takes any Firmware-class package out of the driver store, so nothing re-stages it |
 | `reg add` into the offline `SOFTWARE` hive | writes the policy above, in force on the first boot after the repair |
 | `rd /s /q` | drops `SoftwareDistribution\Download` and any `\EFI\UpdateCapsule` staged on the image's ESP |
 
-The copy is the point. The repair writes to the image, and an image that is
-already failing is not one to experiment on without a way back: the stick keeps
-what it had until you answer the prompt at the end, and `out/rescue/` keeps the
-repaired image after you do. `--in-place` skips the copy, which is right for a
-local build and wrong for the only copy you have.
+The stick's image is copied to `out/rescue/` and repaired there, then copied
+back when you say so at the prompt (`--yes` to skip it, `--refresh` to take a
+fresh copy over one already in `out/rescue/`). An image that is already failing
+is not one to write to without a way back, and until that prompt is answered
+the stick holds exactly what it held. `--in-place` gives up the copy and
+repairs the stick's file directly; an image named with `--vhdx` is always
+repaired where it is.
+
+Putting one image back over another needs room for both at once, which a stick
+holding a grown VHDX rarely has, so `copy-to-stick.sh --replace` deletes the
+image already there first. It deletes nothing it did not write.
 
 DISM reports *"Revert of pending actions will be attempted after the reboot"* —
 the revert itself happens on the image's next boot, so expect one more
@@ -389,10 +396,10 @@ own would fail by design — it has no bootmgr that Ventoy has not supplied.
 disk under construction (~15 GB), and the finished VHDX (~17 GB); peak is
 around 55–60 GB. `make clean` removes all of it.
 
-`make repair` wants room for one more copy of the image as it stands on the
-stick — which is larger than the built one, because a dynamic VHDX grows as
-Windows writes to it. It lands in `out/rescue/` and can be deleted once the
-repaired stick boots.
+`make repair` wants room for one more copy of the stick's image, which is
+larger than the built one because a dynamic VHDX grows as Windows writes to
+it. That copy lives in `out/rescue/` and can be deleted once the repaired
+stick boots.
 
 A dynamic VHDX only consumes what Windows has actually used, but Windows
 believes it has the full virtual size. **If the stick fills up before the VHDX
@@ -420,21 +427,22 @@ override once `qemu-ui-gtk` is installed and you are on X11.
 ```
 docker/Dockerfile              the build environment; nothing else is installed
 lib/common.sh                  shared helpers
-lib/winpe.sh                   building and booting WinPE: shared by build and repair
+lib/winpe.sh                   building and booting a WinPE disk; shared
 ventoy/fetch-vhdboot.sh        install ventoy_vhdboot.img on the stick
-windows/build.sh               host side: inputs, password, docker run
-windows/build-vhdx.sh          the pipeline, inside the container
+windows/build.sh               host side of the build: inputs, password
+windows/build-vhdx.sh          the build pipeline, inside the container
+windows/repair.sh              host side of the repair: copy off the stick
+windows/repair-vhdx.sh         the repair, inside the container
+windows/winpe/startnet.cmd     what WinPE runs during the build: bcdboot, dism
+windows/winpe/repair.cmd       what WinRE runs to back a failed update out
 windows/drivers.txt            driver packages to fetch, by hardware ID
 windows/fetch-drivers.sh       host side of the fetch: docker run
 windows/fetch-drivers.py       the fetch, inside the container
-windows/winpe/startnet.cmd     what WinPE runs instead of Setup: bcdboot, dism
-windows/repair.sh              host side of the repair: copy off the stick, docker run
-windows/repair-vhdx.sh         the repair, inside the container
-windows/winpe/repair.cmd       what WinRE runs to back a failed update out
 windows/drivers/               vendor INF packages to inject (gitignored)
-windows/copy-to-stick.sh       host side: copy the finished VHDX to the stick
+windows/copy-to-stick.sh       host side: copy a VHDX to the stick
 windows/test-boot.sh           boot the stick in QEMU, read-only
+windows/screenshot.sh          grab the screen of a running test-boot over QMP
 windows/unattend/              unattend.xml template
 windows/win11.conf.example     copy to win11.conf and edit
-out/                           build output and logs (gitignored)
+out/                           build output, logs, rescue copies (gitignored)
 ```
